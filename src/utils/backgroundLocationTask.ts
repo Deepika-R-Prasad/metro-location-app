@@ -46,15 +46,34 @@ const clearFailsafeTimer = (): void => {
   }
 };
 
-const scheduleGpsStaleCheck = (): void => {
+const scheduleGpsStaleCheck = async (): Promise<void> => {
   clearGpsStaleTimer();
+
+  const alarmState = await getAlarmState();
+  if (!alarmState?.isActive || alarmState.phase === 'TRIGGERED' || alarmState.phase === 'CLEANUP') {
+    return;
+  }
+
+  const lastUpdateTime = typeof alarmState.lastUpdateTime === 'number' ? alarmState.lastUpdateTime : Date.now();
+  const remainingDelay = Math.max(0, GPS_STALE_TIMEOUT_MS - (Date.now() - lastUpdateTime));
+
   gpsStaleTimeoutId = setTimeout(async () => {
-    const alarmState = await getAlarmState();
-    if (alarmState?.isActive && alarmState.phase !== 'TRIGGERED' && alarmState.phase !== 'CLEANUP') {
+    const latestAlarmState = await getAlarmState();
+    if (!latestAlarmState?.isActive || latestAlarmState.phase === 'TRIGGERED' || latestAlarmState.phase === 'CLEANUP') {
+      return;
+    }
+
+    const latestLastUpdateTime = typeof latestAlarmState.lastUpdateTime === 'number'
+      ? latestAlarmState.lastUpdateTime
+      : Date.now();
+
+    if (Date.now() - latestLastUpdateTime >= GPS_STALE_TIMEOUT_MS) {
       await setBackgroundAlarmState('GPS_LOST');
       await handleGPSDisabledFailsafe();
+    } else {
+      await setBackgroundAlarmState('TRACKING');
     }
-  }, GPS_STALE_TIMEOUT_MS);
+  }, remainingDelay);
 };
 
 export const defineBackgroundLocationTask = (): void => {
@@ -104,16 +123,16 @@ export const defineBackgroundLocationTask = (): void => {
 
         const accuracyMeters = Number.isFinite(location.coords.accuracy) ? location.coords.accuracy : 0;
 
+        await setBackgroundAlarmState('TRACKING');
         await saveLocationSample({ lat, lon, timestamp: Date.now() });
         await saveLastKnownLocation(lat, lon);
+        await scheduleGpsStaleCheck();
 
         if (alarmState.phase === 'TRIGGERED' || isAlarmRunning()) {
           return;
         }
 
         clearFailsafeTimer();
-        await setBackgroundAlarmState('TRACKING');
-        scheduleGpsStaleCheck();
 
         const shouldAlarm = shouldTriggerFromGPS(distance, thresholdDistance, accuracyMeters);
 

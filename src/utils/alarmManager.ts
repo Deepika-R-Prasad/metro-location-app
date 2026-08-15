@@ -138,11 +138,11 @@ export const triggerAlarm = async (): Promise<void> => {
  * Stop alarm (called automatically after 8 seconds or manually)
  */
 export const stopAlarm = async (): Promise<void> => {
-  if (!isAlarmActive) {
-    // Idempotent cleanup: safe to call multiple times.
+  const persistedState = await getAlarmState();
+  if (!isAlarmActive && !(persistedState?.isActive || persistedState?.phase === 'TRIGGERED')) {
     clearAlarmTimeouts();
-    await wipeAllData();
     await updateAlarmPhase('CLEANUP', false);
+    await wipeAllData();
     return;
   }
 
