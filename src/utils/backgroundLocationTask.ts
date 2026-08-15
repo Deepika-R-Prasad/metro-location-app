@@ -57,93 +57,94 @@ const scheduleGpsStaleCheck = (): void => {
   }, GPS_STALE_TIMEOUT_MS);
 };
 
+export const defineBackgroundLocationTask = (): void => {
+  TaskManager.defineTask(
+    BACKGROUND_LOCATION_TASK,
+    async (body) => {
+      const { data, error } = body as {
+        data?: { locations?: Location.LocationObject[] };
+        error?: Error | null;
+      };
+
+      if (error) {
+        if (__DEV__) console.error('Background location task error');
+        return;
+      }
+
+      if (!data?.locations || data.locations.length === 0) {
+        return;
+      }
+
+      const location = data.locations[data.locations.length - 1];
+      if (!location || !location.coords) {
+        if (__DEV__) console.warn('Invalid location data received');
+        return;
+      }
+
+      try {
+        const alarmState = await getAlarmState();
+        const targetLocation = await getTargetLocation();
+        const thresholdDistance = await getThresholdDistance();
+
+        if (!alarmState?.isActive || !targetLocation || !thresholdDistance) {
+          return;
+        }
+
+        const lat = location.coords.latitude;
+        const lon = location.coords.longitude;
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+          if (__DEV__) console.warn('Invalid coordinates received');
+          return;
+        }
+
+        const distance = calculateDistance(lat, lon, targetLocation.lat, targetLocation.lon);
+        const accuracyMeters = Number.isFinite(location.coords.accuracy) ? location.coords.accuracy : 0;
+
+        await saveLocationSample({ lat, lon, timestamp: Date.now() });
+        await saveLastKnownLocation(lat, lon);
+
+        if (alarmState.phase === 'TRIGGERED' || isAlarmRunning()) {
+          return;
+        }
+
+        clearFailsafeTimer();
+        await setBackgroundAlarmState('TRACKING');
+        scheduleGpsStaleCheck();
+
+        const shouldAlarm = shouldTriggerFromGPS(distance, thresholdDistance, accuracyMeters);
+
+        if (shouldAlarm) {
+          const latestState = await getAlarmState();
+          if (latestState?.phase === 'TRIGGERED' || isAlarmRunning()) {
+            return;
+          }
+
+          await setBackgroundAlarmState('TRIGGERED');
+          if (!isAlarmRunning()) {
+            await triggerAlarm();
+          }
+          return;
+        }
+      } catch (error) {
+        if (__DEV__) console.error('Location processing error');
+      }
+    }
+  );
+};
+
 /**
  * Register background location task
  */
 export const registerBackgroundLocationTask = async (): Promise<void> => {
   try {
-    // Unregister existing task first
     const isRegistered = await TaskManager.isTaskRegisteredAsync(
       BACKGROUND_LOCATION_TASK
     );
     if (isRegistered) {
       await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
-      TaskManager.unregisterTaskAsync(BACKGROUND_LOCATION_TASK);
+      await TaskManager.unregisterTaskAsync(BACKGROUND_LOCATION_TASK);
     }
 
-    // Define the task
-    TaskManager.defineTask(
-      BACKGROUND_LOCATION_TASK,
-      async (body) => {
-        const { data, error } = body as {
-          data?: { locations?: Location.LocationObject[] };
-          error?: Error | null;
-        };
-
-        if (error) {
-          if (__DEV__) console.error('Background location task error');
-          return;
-        }
-
-        if (!data?.locations || data.locations.length === 0) {
-          return;
-        }
-
-        const location = data.locations[data.locations.length - 1];
-        if (!location || !location.coords) {
-          if (__DEV__) console.warn('Invalid location data received');
-          return;
-        }
-
-        try {
-          const alarmState = await getAlarmState();
-          const targetLocation = await getTargetLocation();
-          const thresholdDistance = await getThresholdDistance();
-
-          if (!alarmState?.isActive || !targetLocation || !thresholdDistance) {
-            return;
-          }
-
-          const lat = location.coords.latitude;
-          const lon = location.coords.longitude;
-          if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-            if (__DEV__) console.warn('Invalid coordinates received');
-            return;
-          }
-
-          const distance = calculateDistance(lat, lon, targetLocation.lat, targetLocation.lon);
-          const accuracyMeters = Number.isFinite(location.coords.accuracy) ? location.coords.accuracy : 0;
-
-          await saveLocationSample({ lat, lon, timestamp: Date.now() });
-          await saveLastKnownLocation(lat, lon);
-
-          if (alarmState.phase === 'TRIGGERED' || isAlarmRunning()) {
-            return;
-          }
-
-          clearFailsafeTimer();
-          await setBackgroundAlarmState('TRACKING');
-          scheduleGpsStaleCheck();
-
-          const shouldAlarm = shouldTriggerFromGPS(distance, thresholdDistance, accuracyMeters);
-
-          if (shouldAlarm) {
-            const latestState = await getAlarmState();
-            if (latestState?.phase === 'TRIGGERED' || isAlarmRunning()) {
-              return;
-            }
-
-            await setBackgroundAlarmState('TRIGGERED');
-            if (!isAlarmRunning()) {
-              await triggerAlarm();
-            }
-            return;
-          }
-        } catch (error) {
-          if (__DEV__) console.error('Location processing error');
-        }
-      }
-    );
     if (__DEV__) console.log('Background location task registered');
   } catch (error) {
     if (__DEV__) console.error('Failed to register background location task');

@@ -124,17 +124,11 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
       // Save configuration
       await saveTargetLocation(lat, lon);
       await saveThresholdDistance(threshold);
-      await saveAlarmState({
-        isActive: true,
-        targetLat: lat,
-        targetLon: lon,
-        thresholdDistance: threshold,
-      });
 
       // Initialize notifications
       await initializeNotifications();
 
-      // Request background location permission
+      // Request background location permission first, before marking alarm active.
       const { status } =
         await Location.requestBackgroundPermissionsAsync();
       if (status !== 'granted') {
@@ -145,6 +139,13 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
         setIsLoading(false);
         return;
       }
+
+      await saveAlarmState({
+        isActive: true,
+        targetLat: lat,
+        targetLon: lon,
+        thresholdDistance: threshold,
+      });
 
       // Register and start background location tracking
       await registerBackgroundLocationTask();

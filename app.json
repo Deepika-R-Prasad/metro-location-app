@@ -12,7 +12,9 @@
         {
           "locationAlwaysAndWhenInUsePermission": "Allow $(PRODUCT_NAME) to access your location.",
           "locationAlwaysPermission": "Allow $(PRODUCT_NAME) to access your location at all times.",
-          "locationWhenInUsePermission": "Allow $(PRODUCT_NAME) to access your location."
+          "locationWhenInUsePermission": "Allow $(PRODUCT_NAME) to access your location.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isIosBackgroundLocationEnabled": true
         }
       ],
       "expo-notifications"
