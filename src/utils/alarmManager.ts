@@ -72,7 +72,7 @@ export const sendNotification = async (
         sound: 'default',
         badge: 1,
       },
-      trigger: null, // Send immediately
+      trigger: null,
     });
   } catch (error) {
     if (__DEV__) console.warn('Failed to send notification:', error);
@@ -87,20 +87,26 @@ const playAlarmSound = async (): Promise<void> => {
     if (alarmSoundObject) {
       await alarmSoundObject.unloadAsync?.();
     }
-    // System notification sound will play via Notifications API
+    // System notification sound will play via Notifications API.
   } catch (error) {
-    // Fail silently for production
     if (__DEV__) console.warn('Failed to play alarm sound:', error);
   }
 };
 
 /**
- * Trigger alarm with vibration and audio
- * Runs for exactly 8 seconds then stops automatically
+ * Trigger alarm with vibration and audio.
+ * The alarm manager is the single owner of the 8-second alarm lifecycle.
  */
 export const triggerAlarm = async (): Promise<void> => {
+  // Prevent concurrent in-process triggers immediately, before any await.
+  if (isAlarmActive) {
+    return;
+  }
+
   const currentState = await getAlarmState();
-  if (isAlarmActive || currentState?.phase === 'TRIGGERED' || currentState?.isActive) {
+
+  // A persisted TRIGGERED state is authoritative after process recreation.
+  if (currentState?.phase === 'TRIGGERED') {
     return;
   }
 
@@ -108,7 +114,12 @@ export const triggerAlarm = async (): Promise<void> => {
   await updateAlarmPhase('TRIGGERED', true);
 
   try {
-    await sendNotification('Almost there!', 'You are nearing your destination — please get ready.');
+    await sendNotification(
+      'Almost there!',
+      'You are nearing your destination — please get ready.'
+    );
+
+    await playAlarmSound();
 
     const vibratePattern = [200, 100, 200, 100, 200, 100, 200, 100];
     const startTime = Date.now();
@@ -124,8 +135,8 @@ export const triggerAlarm = async (): Promise<void> => {
     clearAlarmTimeouts();
     vibrationLoop();
 
-    alarmTimeoutId = setTimeout(async () => {
-      await stopAlarm();
+    alarmTimeoutId = setTimeout(() => {
+      void stopAlarm();
     }, ALARM_DURATION_MS);
   } catch (error) {
     isAlarmActive = false;
@@ -135,13 +146,14 @@ export const triggerAlarm = async (): Promise<void> => {
 };
 
 /**
- * Stop alarm (called automatically after 8 seconds or manually)
+ * Stop alarm (called automatically after 8 seconds or manually).
+ * Also owns final tracking/data cleanup for the completed session.
  */
 export const stopAlarm = async (): Promise<void> => {
   const persistedState = await getAlarmState();
+
   if (!isAlarmActive && !(persistedState?.isActive || persistedState?.phase === 'TRIGGERED')) {
     clearAlarmTimeouts();
-    await updateAlarmPhase('CLEANUP', false);
     await wipeAllData();
     return;
   }
@@ -164,6 +176,7 @@ export const stopAlarm = async (): Promise<void> => {
       phase: 'CLEANUP',
       lastUpdateTime: Date.now(),
     });
+
     await stopTrackingForAlarmEnd();
     await wipeAllData();
   } catch (error) {
