@@ -26,6 +26,18 @@ const clearAlarmTimeouts = (): void => {
   }
 };
 
+const stopTrackingForAlarmEnd = async (): Promise<void> => {
+  try {
+    const { stopBackgroundLocationUpdates, resetAlarmTriggerFlag } = await import(
+      './backgroundLocationTask'
+    );
+    await stopBackgroundLocationUpdates();
+    resetAlarmTriggerFlag();
+  } catch (error) {
+    if (__DEV__) console.warn('Tracking cleanup after alarm end failed');
+  }
+};
+
 /**
  * Initialize notifications handler
  */
@@ -152,6 +164,7 @@ export const stopAlarm = async (): Promise<void> => {
       phase: 'CLEANUP',
       lastUpdateTime: Date.now(),
     });
+    await stopTrackingForAlarmEnd();
     await wipeAllData();
   } catch (error) {
     if (__DEV__) console.warn('Alarm cleanup error');

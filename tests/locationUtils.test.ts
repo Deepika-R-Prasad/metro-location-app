@@ -10,22 +10,26 @@ import {
 
 test('calculateDistance returns a sensible value for nearby coordinates', () => {
   const distance = calculateDistance(12.9716, 77.5946, 12.9720, 77.5946);
-  assert.ok(distance > 0);
-  assert.ok(distance < 1000);
+  assert.ok(distance !== null);
+  assert.ok(distance !== undefined);
+  assert.ok(distance! > 0);
+  assert.ok(distance! < 1000);
 });
 
 test('calculateDistance rejects invalid coordinates', () => {
-  assert.equal(calculateDistance(Number.NaN, 0, 0, 0), 0);
-  assert.equal(calculateDistance(91, 0, 0, 0), 0);
-  assert.equal(calculateDistance(0, 181, 0, 0), 0);
+  assert.equal(calculateDistance(Number.NaN, 0, 0, 0), null);
+  assert.equal(calculateDistance(91, 0, 0, 0), null);
+  assert.equal(calculateDistance(0, 181, 0, 0), null);
 });
 
 test('calculateDistance handles date-line crossing', () => {
   const distanceEast = calculateDistance(0, 179, 0, -179);
   const distanceWest = calculateDistance(0, -179, 0, 179);
-  assert.ok(distanceEast > 0);
-  assert.ok(distanceWest > 0);
-  assert.ok(Math.abs(distanceEast - distanceWest) < 1);
+  assert.ok(distanceEast !== null);
+  assert.ok(distanceWest !== null);
+  assert.ok(distanceEast! > 0);
+  assert.ok(distanceWest! > 0);
+  assert.ok(Math.abs(distanceEast! - distanceWest!) < 1);
 });
 
 test('calculateAverageVelocity ignores invalid or stale samples', () => {
@@ -50,4 +54,5 @@ test('shouldTriggerFromGPS uses accuracy conservatively', () => {
   assert.equal(shouldTriggerFromGPS(10, 50, 20), true);
   assert.equal(shouldTriggerFromGPS(60, 50, 20), false);
   assert.equal(shouldTriggerFromGPS(100, 25, 100), true);
+  assert.equal(shouldTriggerFromGPS(null as unknown as number, 50, 20), false);
 });

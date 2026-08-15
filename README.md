@@ -243,10 +243,10 @@ The app requests the following permissions in order of use:
 
 ### Local Storage Only
 - Uses `@react-native-async-storage/async-storage`
-- All data stored encrypted on device (handled by OS)
-- No remote servers contacted
+- Location processing is performed locally on the device
+- The app does not send trip location data to a developer-controlled backend
 - No analytics tracked
-- No user data shared
+- No user data shared with external services
 
 ### Data Types Stored
 1. **Alarm State** - `isActive`, target coordinates, threshold
@@ -310,8 +310,8 @@ cd android && ./gradlew assembleRelease
 - **Description**: 
   ```
   Simple, private location alarm app. Get notified when you arrive at your destination 
-  with zero cloud tracking or analytics. All data stays on your phone and is automatically 
-  deleted after use. Fully compliant with GDPR and Indian privacy laws.
+  with no cloud tracking or analytics. All trip data stays on the device and is automatically 
+  deleted after use.
   ```
 - **Permissions Justification**:
   - Location: For GPS-based distance calculation

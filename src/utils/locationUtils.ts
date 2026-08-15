@@ -2,14 +2,14 @@
  * Haversine formula for calculating distance between two geographic coordinates.
  * Returns distance in meters.
  *
- * ⚠️ SECURITY: Validates all inputs to prevent NaN/Infinity results
+ * Invalid coordinates are rejected instead of being treated as zero-distance.
  */
 export const calculateDistance = (
   lat1: number,
   lon1: number,
   lat2: number,
   lon2: number
-): number => {
+): number | null => {
   // Input validation - prevent NaN, Infinity, and out-of-range coordinates
   if (
     !Number.isFinite(lat1) ||
@@ -17,18 +17,17 @@ export const calculateDistance = (
     !Number.isFinite(lat2) ||
     !Number.isFinite(lon2)
   ) {
-    // Return 0 for invalid inputs (safer than throwing in background task)
-    return 0;
+    return null;
   }
 
   // Validate latitude range [-90, 90]
   if (lat1 < -90 || lat1 > 90 || lat2 < -90 || lat2 > 90) {
-    return 0;
+    return null;
   }
 
   // Validate longitude range [-180, 180]
   if (lon1 < -180 || lon1 > 180 || lon2 < -180 || lon2 > 180) {
-    return 0;
+    return null;
   }
 
   const R = 6371000; // Earth's radius in meters
@@ -51,9 +50,9 @@ export const calculateDistance = (
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 
   const result = R * c;
-  
+
   // Final validation: result should be finite
-  return Number.isFinite(result) ? result : 0;
+  return Number.isFinite(result) ? result : null;
 };
 
 /**
@@ -89,11 +88,11 @@ export const getEstimatedTimeToTarget = (
  *   user is not missed because the GPS fix is noisy.
  */
 export const shouldTriggerFromGPS = (
-  distanceToTarget: number,
+  distanceToTarget: number | null | undefined,
   thresholdDistance: number,
   accuracyMeters?: number | null
 ): boolean => {
-  if (!Number.isFinite(distanceToTarget) || !Number.isFinite(thresholdDistance)) {
+  if (distanceToTarget === null || distanceToTarget === undefined || !Number.isFinite(distanceToTarget) || !Number.isFinite(thresholdDistance)) {
     return false;
   }
 
@@ -101,7 +100,7 @@ export const shouldTriggerFromGPS = (
     return false;
   }
 
-  const safeAccuracy = Number.isFinite(accuracyMeters) ? Math.max(0, accuracyMeters as number) : 0;
+  const safeAccuracy = Number.isFinite(accuracyMeters) ? Math.max(0, Number(accuracyMeters)) : 0;
 
   // A very inaccurate reading should not trigger solely from noise.
   const conservativeBuffer = Math.min(thresholdDistance * 0.5, Math.max(10, safeAccuracy * 0.5));
@@ -164,6 +163,10 @@ export const calculateAverageVelocity = (
       currentSample.lat,
       currentSample.lon
     );
+
+    if (distance === null) {
+      continue;
+    }
 
     // Time difference: skip if backward (timestamp went backwards)
     const timeDiff = (currentSample.timestamp - prevSample.timestamp) / 1000; // Convert to seconds

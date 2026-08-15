@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
@@ -14,8 +14,12 @@ import {
   cancelActiveTracking,
 } from '../utils/backgroundLocationTask';
 
+type HomeScreenNavigationProp = {
+  navigate: (screen: 'Configuration') => void;
+};
+
 interface HomeScreenProps {
-  navigation: any;
+  navigation: HomeScreenNavigationProp;
 }
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {

@@ -15,7 +15,6 @@ import {
   getLocationSamples,
   getLastKnownLocation,
   updateAlarmPhase,
-  wipeAllData,
 } from './cacheManager';
 import { triggerAlarm, isAlarmRunning, stopAlarm, sendNotification } from './alarmManager';
 
@@ -99,6 +98,10 @@ export const defineBackgroundLocationTask = (): void => {
         }
 
         const distance = calculateDistance(lat, lon, targetLocation.lat, targetLocation.lon);
+        if (distance === null) {
+          return;
+        }
+
         const accuracyMeters = Number.isFinite(location.coords.accuracy) ? location.coords.accuracy : 0;
 
         await saveLocationSample({ lat, lon, timestamp: Date.now() });
@@ -202,8 +205,13 @@ export const stopBackgroundLocationUpdates = async (): Promise<void> => {
 };
 
 export const cancelActiveTracking = async (): Promise<void> => {
+  try {
+    await stopAlarm();
+  } catch (error) {
+    if (__DEV__) console.warn('Alarm stop during cancel failed');
+  }
+
   await stopBackgroundLocationUpdates();
-  await wipeAllData();
   resetAlarmTriggerFlag();
 };
 
@@ -212,6 +220,11 @@ export const cancelActiveTracking = async (): Promise<void> => {
  */
 export const handleGPSDisabledFailsafe = async (): Promise<void> => {
   try {
+    if (failsafeTimeoutId) {
+      clearTimeout(failsafeTimeoutId);
+      failsafeTimeoutId = null;
+    }
+
     const locationSamples = await getLocationSamples();
     const targetLocation = await getTargetLocation();
     const lastKnownLocationData = await getLastKnownLocation();
@@ -233,6 +246,11 @@ export const handleGPSDisabledFailsafe = async (): Promise<void> => {
       targetLocation.lat,
       targetLocation.lon
     );
+
+    if (remainingDistance === null) {
+      return;
+    }
+
     const estimatedTimeSeconds = getEstimatedTimeToTarget(remainingDistance, avgVelocity);
 
     if (!Number.isFinite(estimatedTimeSeconds) || estimatedTimeSeconds <= 0 || estimatedTimeSeconds > 3600) {
@@ -244,7 +262,7 @@ export const handleGPSDisabledFailsafe = async (): Promise<void> => {
 
     await sendNotification(
       'GPS Connection Lost',
-      `Alarm will trigger in approximately ${Math.round(estimatedTimeSeconds)} seconds`
+      `Estimated trigger time: about ${Math.round(estimatedTimeSeconds)} seconds remaining`
     );
 
     const timeoutMs = Math.max(estimatedTimeSeconds * 1000, 5000);
