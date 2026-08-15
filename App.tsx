@@ -3,10 +3,6 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { ConfigurationScreen } from './src/screens/ConfigurationScreen';
-import { defineBackgroundLocationTask } from './src/utils/backgroundLocationTask';
-
-// Background tasks must be defined at module load time before tracking starts.
-defineBackgroundLocationTask();
 
 const Stack = createNativeStackNavigator();
 
