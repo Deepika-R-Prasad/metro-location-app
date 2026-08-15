@@ -6,8 +6,17 @@ const THRESHOLD_DISTANCE_KEY = 'threshold_distance';
 const LAST_KNOWN_LOCATION_KEY = 'last_known_location';
 const LOCATION_SAMPLES_KEY = 'location_samples';
 
+export type AlarmPhase =
+  | 'IDLE'
+  | 'TRACKING'
+  | 'GPS_LOST'
+  | 'FAILSAFE'
+  | 'TRIGGERED'
+  | 'CLEANUP';
+
 export interface AlarmState {
   isActive: boolean;
+  phase?: AlarmPhase;
   targetLat?: number;
   targetLon?: number;
   thresholdDistance?: number;
@@ -44,6 +53,25 @@ export const getAlarmState = async (): Promise<AlarmState | null> => {
     if (__DEV__) console.warn('Storage error');
     return null;
   }
+};
+
+/**
+ * Persist a lightweight alarm phase to recover safely after app restarts.
+ */
+export const updateAlarmPhase = async (
+  phase: AlarmPhase,
+  isActive = phase !== 'IDLE' && phase !== 'CLEANUP'
+): Promise<AlarmState | null> => {
+  const currentState = (await getAlarmState()) ?? { isActive: false };
+  const nextState: AlarmState = {
+    ...currentState,
+    isActive,
+    phase,
+    lastUpdateTime: Date.now(),
+  };
+
+  await saveAlarmState(nextState);
+  return nextState;
 };
 
 /**

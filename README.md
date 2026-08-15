@@ -1,10 +1,12 @@
 # Metro Location Alarm App
 
-A production-ready React Native + Expo application for intelligent location-based alarm triggering with automatic cache cleanup, offline failsafe capabilities, and full privacy compliance.
+A React Native + Expo location alarm app for local, on-device alarm triggering with background tracking, a GPS-loss fallback, and privacy-first local storage.
 
 ## Overview
 
-This application provides a clean, modern interface for setting location-based alarms that trigger when you reach your destination. It operates entirely on-device with zero cloud dependencies or analytics tracking, complying with global and Indian privacy standards (GDPR, NPPT, etc.).
+This application provides a clean, modern interface for setting location-based alarms that trigger when you reach your destination. It operates entirely on-device with no backend, external analytics, or cloud dependency, and is designed with privacy considerations in mind.
+
+> Note: the app stores location data locally on the device and does not transmit it to a backend. It is not a legal compliance certification and should be reviewed for your specific regional and app-store requirements.
 
 ### Key Features
 
@@ -15,7 +17,8 @@ This application provides a clean, modern interface for setting location-based a
 ✅ **Offline Failsafe** - Velocity-based time estimation when GPS/network is unavailable
 ✅ **Premium Dark/Light UI** - Adaptive modern interface using system theme
 ✅ **Zero Permissions Friction** - Clean startup sequence with necessary Android permissions
-✅ **Google Play Store Ready** - Privacy-compliant, no telemetry, no external logging
+✅ **Privacy-first local-only design** - no backend, no telemetry, no external logging
+✅ **Best-effort local reliability** - device-side tracking and fallback logic designed for Android background operation
 
 ## Project Architecture
 

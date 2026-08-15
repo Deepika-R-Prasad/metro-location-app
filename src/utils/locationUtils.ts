@@ -1,7 +1,7 @@
 /**
  * Haversine formula for calculating distance between two geographic coordinates.
  * Returns distance in meters.
- * 
+ *
  * ⚠️ SECURITY: Validates all inputs to prevent NaN/Infinity results
  */
 export const calculateDistance = (
@@ -77,6 +77,47 @@ export const getEstimatedTimeToTarget = (
   }
 
   return distance / avgVelocity;
+};
+
+/**
+ * Decide whether a location update should trigger the alarm.
+ *
+ * We intentionally use a conservative rule:
+ * - when accuracy is poor, require the reading to be meaningfully inside the threshold
+ * - when accuracy is better, trigger at the configured threshold as normal
+ * - if accuracy exceeds the threshold, allow a slightly wider trigger window so the
+ *   user is not missed because the GPS fix is noisy.
+ */
+export const shouldTriggerFromGPS = (
+  distanceToTarget: number,
+  thresholdDistance: number,
+  accuracyMeters?: number | null
+): boolean => {
+  if (!Number.isFinite(distanceToTarget) || !Number.isFinite(thresholdDistance)) {
+    return false;
+  }
+
+  if (thresholdDistance <= 0) {
+    return false;
+  }
+
+  const safeAccuracy = Number.isFinite(accuracyMeters) ? Math.max(0, accuracyMeters as number) : 0;
+
+  // A very inaccurate reading should not trigger solely from noise.
+  const conservativeBuffer = Math.min(thresholdDistance * 0.5, Math.max(10, safeAccuracy * 0.5));
+  const safeDistance = Math.max(0, thresholdDistance - conservativeBuffer);
+
+  if (distanceToTarget <= safeDistance) {
+    return true;
+  }
+
+  // If the accuracy radius is already larger than the configured threshold,
+  // allow a wider but still conservative window to avoid missing the trigger.
+  if (safeAccuracy >= thresholdDistance) {
+    return distanceToTarget <= thresholdDistance + safeAccuracy * 0.75;
+  }
+
+  return distanceToTarget <= thresholdDistance;
 };
 
 /**

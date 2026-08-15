@@ -1,12 +1,30 @@
 import { Vibration } from 'react-native';
 import * as Notifications from 'expo-notifications';
+import {
+  getAlarmState,
+  saveAlarmState,
+  updateAlarmPhase,
+  wipeAllData,
+} from './cacheManager';
 
 const ALARM_DURATION_MS = 8000; // 8 seconds
 
-let alarmSoundObject: any = null;
+let alarmSoundObject: { unloadAsync?: () => Promise<void> } | null = null;
 let isAlarmActive = false;
 let alarmTimeoutId: ReturnType<typeof setTimeout> | null = null;
 let vibrationIntervalIds: ReturnType<typeof setTimeout>[] = [];
+
+const clearAlarmTimeouts = (): void => {
+  if (alarmTimeoutId) {
+    clearTimeout(alarmTimeoutId);
+    alarmTimeoutId = null;
+  }
+
+  if (vibrationIntervalIds.length > 0) {
+    vibrationIntervalIds.forEach((id) => clearTimeout(id));
+    vibrationIntervalIds = [];
+  }
+};
 
 /**
  * Initialize notifications handler
@@ -69,45 +87,38 @@ const playAlarmSound = async (): Promise<void> => {
  * Runs for exactly 8 seconds then stops automatically
  */
 export const triggerAlarm = async (): Promise<void> => {
-  if (isAlarmActive) {
-    return; // Already active, ignore duplicate
+  const currentState = await getAlarmState();
+  if (isAlarmActive || currentState?.phase === 'TRIGGERED' || currentState?.isActive) {
+    return;
   }
 
   isAlarmActive = true;
+  await updateAlarmPhase('TRIGGERED', true);
 
   try {
-    // Send notification
-    await sendNotification(
-      'Location Alarm',
-      'You have reached your destination!'
-    );
+    await sendNotification('Location Alarm', 'You have reached your destination!');
 
-    // Start vibration pattern: 200ms on, 100ms off, repeated
     const vibratePattern = [200, 100, 200, 100, 200, 100, 200, 100];
     const startTime = Date.now();
 
-    // Schedule vibration loop with tracked IDs
-    const vibrationLoop = () => {
-      if (
-        isAlarmActive &&
-        Date.now() - startTime < ALARM_DURATION_MS
-      ) {
+    const vibrationLoop = (): void => {
+      if (isAlarmActive && Date.now() - startTime < ALARM_DURATION_MS) {
         Vibration.vibrate(vibratePattern);
         const timeoutId = setTimeout(vibrationLoop, 1000);
         vibrationIntervalIds.push(timeoutId);
       }
     };
 
+    clearAlarmTimeouts();
     vibrationLoop();
 
-    // Auto-stop after 8 seconds (hard timeout)
-    // Add extra safety margin and force stop
     alarmTimeoutId = setTimeout(async () => {
       await stopAlarm();
     }, ALARM_DURATION_MS);
   } catch (error) {
     isAlarmActive = false;
-    if (__DEV__) console.error('Error triggering alarm:', error);
+    await updateAlarmPhase('CLEANUP', false);
+    if (__DEV__) console.error('Alarm error');
   }
 };
 
@@ -115,30 +126,35 @@ export const triggerAlarm = async (): Promise<void> => {
  * Stop alarm (called automatically after 8 seconds or manually)
  */
 export const stopAlarm = async (): Promise<void> => {
+  if (!isAlarmActive) {
+    // Idempotent cleanup: safe to call multiple times.
+    clearAlarmTimeouts();
+    await wipeAllData();
+    await updateAlarmPhase('CLEANUP', false);
+    return;
+  }
+
   isAlarmActive = false;
+  clearAlarmTimeouts();
 
   try {
-    // Stop vibration immediately
     Vibration.cancel();
 
-    // Stop audio if loaded
     if (alarmSoundObject?.unloadAsync) {
       await alarmSoundObject.unloadAsync();
       alarmSoundObject = null;
     }
 
-    // Clear main alarm timeout
-    if (alarmTimeoutId) {
-      clearTimeout(alarmTimeoutId);
-      alarmTimeoutId = null;
-    }
-
-    // Clear all vibration interval IDs (CRITICAL: prevents orphaned timeouts)
-    vibrationIntervalIds.forEach(id => clearTimeout(id));
-    vibrationIntervalIds = [];
+    const existingState = (await getAlarmState()) ?? { isActive: false };
+    await saveAlarmState({
+      ...existingState,
+      isActive: false,
+      phase: 'CLEANUP',
+      lastUpdateTime: Date.now(),
+    });
+    await wipeAllData();
   } catch (error) {
-    // Fail silently for production
-    if (__DEV__) console.warn('Error stopping alarm:', error);
+    if (__DEV__) console.warn('Alarm cleanup error');
   }
 };
 
