@@ -15,6 +15,7 @@ import {
   getLocationSamples,
   getLastKnownLocation,
   updateAlarmPhase,
+  wipeAllData,
 } from './cacheManager';
 import { triggerAlarm, isAlarmRunning, stopAlarm, sendNotification } from './alarmManager';
 
@@ -198,6 +199,12 @@ export const stopBackgroundLocationUpdates = async (): Promise<void> => {
   } catch (error) {
     if (__DEV__) console.error('Failed to stop background location updates');
   }
+};
+
+export const cancelActiveTracking = async (): Promise<void> => {
+  await stopBackgroundLocationUpdates();
+  await wipeAllData();
+  resetAlarmTriggerFlag();
 };
 
 /**

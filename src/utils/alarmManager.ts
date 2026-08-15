@@ -96,7 +96,7 @@ export const triggerAlarm = async (): Promise<void> => {
   await updateAlarmPhase('TRIGGERED', true);
 
   try {
-    await sendNotification('Location Alarm', 'You have reached your destination!');
+    await sendNotification('Almost there!', 'You are nearing your destination — please get ready.');
 
     const vibratePattern = [200, 100, 200, 100, 200, 100, 200, 100];
     const startTime = Date.now();

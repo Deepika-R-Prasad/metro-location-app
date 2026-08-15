@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -8,6 +9,10 @@ import {
   useColorScheme,
   ActivityIndicator,
 } from 'react-native';
+import { getAlarmState, AlarmState } from '../utils/cacheManager';
+import {
+  cancelActiveTracking,
+} from '../utils/backgroundLocationTask';
 
 interface HomeScreenProps {
   navigation: any;
@@ -17,6 +22,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const [isLoading, setIsLoading] = useState(false);
+  const [activeState, setActiveState] = useState<AlarmState | null>(null);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      const refreshState = async () => {
+        const state = await getAlarmState();
+        setActiveState(state);
+      };
+
+      refreshState();
+    }, [])
+  );
 
   const handleSetLocationAlarm = () => {
     setIsLoading(true);
@@ -25,6 +42,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
       navigation.navigate('Configuration');
       setIsLoading(false);
     }, 300);
+  };
+
+  const handleCancelTracking = async () => {
+    await cancelActiveTracking();
+    const state = await getAlarmState();
+    setActiveState(state);
   };
 
   return (
@@ -55,46 +78,85 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
           </Text>
         </View>
 
-        {/* Feature List */}
-        <View style={styles.featureSection}>
-          <FeatureCard
-            icon="📍"
-            title="Precise Location Tracking"
-            description="Uses GPS to monitor your location in real-time"
-            isDark={isDark}
-          />
-          <FeatureCard
-            icon="🔔"
-            title="Smart Notifications"
-            description="Vibration and audio alerts when threshold is reached"
-            isDark={isDark}
-          />
-          <FeatureCard
-            icon="🔒"
-            title="Privacy First"
-            description="All data stored locally, no external tracking"
-            isDark={isDark}
-          />
-          <FeatureCard
-            icon="📡"
-            title="Offline Ready"
-            description="Works with or without internet connection"
-            isDark={isDark}
-          />
-        </View>
+        {activeState?.isActive ? (
+          <View
+            style={[
+              styles.featureSection,
+              {
+                backgroundColor: isDark ? '#2a2a2a' : '#ffffff',
+                borderColor: isDark ? '#3a3a3a' : '#e0e0e0',
+                borderWidth: 1,
+                borderRadius: 12,
+                padding: 16,
+              },
+            ]}
+          >
+            <Text
+              style={[
+                styles.featureTitle,
+                { color: isDark ? '#ffffff' : '#1a1a1a' },
+              ]}
+            >
+              Active tracking
+            </Text>
+            <Text
+              style={[
+                styles.featureDescription,
+                { color: isDark ? '#b0b0b0' : '#666666' },
+              ]}
+            >
+              Threshold: {activeState.thresholdDistance ?? 'N/A'} m
+            </Text>
+            <TouchableOpacity
+              style={[styles.ctaButton, { marginTop: 12 }]}
+              onPress={handleCancelTracking}
+            >
+              <Text style={styles.ctaButtonText}>Cancel Tracking</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <View style={styles.featureSection}>
+            <FeatureCard
+              icon="📍"
+              title="Precise Location Tracking"
+              description="Uses GPS to monitor your location in real-time"
+              isDark={isDark}
+            />
+            <FeatureCard
+              icon="🔔"
+              title="Smart Notifications"
+              description="Vibration and audio alerts when threshold is reached"
+              isDark={isDark}
+            />
+            <FeatureCard
+              icon="🔒"
+              title="Privacy First"
+              description="All data stored locally, no external tracking"
+              isDark={isDark}
+            />
+            <FeatureCard
+              icon="📡"
+              title="Offline Ready"
+              description="Works with or without internet connection"
+              isDark={isDark}
+            />
+          </View>
+        )}
 
         {/* CTA Button */}
-        <TouchableOpacity
-          style={styles.ctaButton}
-          onPress={handleSetLocationAlarm}
-          disabled={isLoading}
-        >
-          {isLoading ? (
-            <ActivityIndicator size="small" color="#ffffff" />
-          ) : (
-            <Text style={styles.ctaButtonText}>Set Location Alarm</Text>
-          )}
-        </TouchableOpacity>
+        {!activeState?.isActive ? (
+          <TouchableOpacity
+            style={styles.ctaButton}
+            onPress={handleSetLocationAlarm}
+            disabled={isLoading}
+          >
+            {isLoading ? (
+              <ActivityIndicator size="small" color="#ffffff" />
+            ) : (
+              <Text style={styles.ctaButtonText}>Set Location Alarm</Text>
+            )}
+          </TouchableOpacity>
+        ) : null}
 
         {/* Footer Info */}
         <View style={styles.footerSection}>
