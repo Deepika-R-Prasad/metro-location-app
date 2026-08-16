@@ -19,6 +19,7 @@ export interface AlarmState {
   phase?: AlarmPhase;
   targetLat?: number;
   targetLon?: number;
+  targetLabel?: string;
   thresholdDistance?: number;
   lastKnownLat?: number;
   lastKnownLon?: number;
@@ -61,7 +62,6 @@ export const updateAlarmPhase = async (
     phase,
     lastUpdateTime: Date.now(),
   };
-
   await saveAlarmState(nextState);
   return nextState;
 };
@@ -116,11 +116,7 @@ export const saveLastKnownLocation = async (lat: number, lon: number): Promise<v
   }
 };
 
-export const getLastKnownLocation = async (): Promise<{
-  lat: number;
-  lon: number;
-  timestamp: number;
-} | null> => {
+export const getLastKnownLocation = async (): Promise<{ lat: number; lon: number; timestamp: number } | null> => {
   try {
     const location = await AsyncStorage.getItem(LAST_KNOWN_LOCATION_KEY);
     return location ? JSON.parse(location) : null;
@@ -154,19 +150,11 @@ export const getLocationSamples = async (): Promise<LocationSample[]> => {
 };
 
 export const wipeAllData = async (): Promise<void> => {
-  const keys = [
-    ALARM_STATE_KEY,
-    TARGET_LOCATION_KEY,
-    THRESHOLD_DISTANCE_KEY,
-    LAST_KNOWN_LOCATION_KEY,
-    LOCATION_SAMPLES_KEY,
-  ];
-
+  const keys = [ALARM_STATE_KEY, TARGET_LOCATION_KEY, THRESHOLD_DISTANCE_KEY, LAST_KNOWN_LOCATION_KEY, LOCATION_SAMPLES_KEY];
   const results = await Promise.allSettled(keys.map((key) => AsyncStorage.removeItem(key)));
   if (results.some((result) => result.status === 'rejected')) {
     throw new Error('Unable to remove all local session data');
   }
-
   const remaining = await Promise.all(keys.map((key) => AsyncStorage.getItem(key)));
   if (remaining.some((value) => value !== null)) {
     throw new Error('Local session cleanup could not be verified');
