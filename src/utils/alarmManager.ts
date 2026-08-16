@@ -1,13 +1,8 @@
-import { Vibration } from 'react-native';
+import { Platform, Vibration } from 'react-native';
 import * as Notifications from 'expo-notifications';
-import {
-  getAlarmState,
-  saveAlarmState,
-  updateAlarmPhase,
-  wipeAllData,
-} from './cacheManager';
+import { getAlarmState, saveAlarmState, updateAlarmPhase, wipeAllData } from './cacheManager';
 
-const ALARM_DURATION_MS = 8000; // 8 seconds
+const ALARM_DURATION_MS = 8000;
 
 let alarmSoundObject: { unloadAsync?: () => Promise<void> } | null = null;
 let isAlarmActive = false;
@@ -19,18 +14,13 @@ const clearAlarmTimeouts = (): void => {
     clearTimeout(alarmTimeoutId);
     alarmTimeoutId = null;
   }
-
-  if (vibrationIntervalIds.length > 0) {
-    vibrationIntervalIds.forEach((id) => clearTimeout(id));
-    vibrationIntervalIds = [];
-  }
+  vibrationIntervalIds.forEach((id) => clearTimeout(id));
+  vibrationIntervalIds = [];
 };
 
 const stopTrackingForAlarmEnd = async (): Promise<void> => {
   try {
-    const { stopBackgroundLocationUpdates, resetAlarmTriggerFlag } = await import(
-      './backgroundLocationTask'
-    );
+    const { stopBackgroundLocationUpdates, resetAlarmTriggerFlag } = await import('./backgroundLocationTask');
     await stopBackgroundLocationUpdates();
     resetAlarmTriggerFlag();
   } catch (error) {
@@ -38,32 +28,32 @@ const stopTrackingForAlarmEnd = async (): Promise<void> => {
   }
 };
 
-/**
- * Initialize notifications handler
- */
 export const initializeNotifications = async (): Promise<void> => {
   try {
+    if (Platform.OS === 'android' && typeof Notifications.setNotificationChannelAsync === 'function') {
+      await Notifications.setNotificationChannelAsync('wake-me-there-alarm', {
+        name: 'WakeMeThere alarm',
+        importance: Notifications.AndroidImportance.MAX,
+        sound: 'default',
+        vibrationPattern: [0, 250, 100, 250, 100, 250],
+      });
+    }
+
     Notifications.setNotificationHandler({
       handleNotification: async () => ({
         shouldShowAlert: true,
-        shouldPlaySound: false,
+        shouldPlaySound: true,
         shouldSetBadge: true,
         shouldShowBanner: true,
         shouldShowList: true,
       }),
     });
   } catch (error) {
-    if (__DEV__) console.warn('Failed to initialize notifications:', error);
+    if (__DEV__) console.warn('Failed to initialize notifications');
   }
 };
 
-/**
- * Send local notification
- */
-export const sendNotification = async (
-  title: string,
-  body: string
-): Promise<void> => {
+export const sendNotification = async (title: string, body: string): Promise<void> => {
   try {
     await Notifications.scheduleNotificationAsync({
       content: {
@@ -71,54 +61,34 @@ export const sendNotification = async (
         body,
         sound: 'default',
         badge: 1,
+        channelId: 'wake-me-there-alarm',
       },
       trigger: null,
     });
   } catch (error) {
-    if (__DEV__) console.warn('Failed to send notification:', error);
+    if (__DEV__) console.warn('Failed to send notification');
   }
 };
 
-/**
- * Play alarm sound in a loop
- */
 const playAlarmSound = async (): Promise<void> => {
   try {
-    if (alarmSoundObject) {
-      await alarmSoundObject.unloadAsync?.();
-    }
-    // System notification sound will play via Notifications API.
+    await alarmSoundObject?.unloadAsync?.();
+    // Android notification-channel sound provides the audio cue without adding an audio package.
   } catch (error) {
-    if (__DEV__) console.warn('Failed to play alarm sound:', error);
+    if (__DEV__) console.warn('Failed to prepare alarm sound');
   }
 };
 
-/**
- * Trigger alarm with vibration and audio.
- * The alarm manager is the single owner of the 8-second alarm lifecycle.
- */
 export const triggerAlarm = async (): Promise<void> => {
-  // Prevent concurrent in-process triggers immediately, before any await.
-  if (isAlarmActive) {
-    return;
-  }
+  if (isAlarmActive) return;
 
   const currentState = await getAlarmState();
-
-  // A persisted TRIGGERED state is authoritative after process recreation.
-  if (currentState?.phase === 'TRIGGERED') {
-    return;
-  }
+  if (currentState?.phase === 'TRIGGERED') return;
 
   isAlarmActive = true;
-  await updateAlarmPhase('TRIGGERED', true);
-
   try {
-    await sendNotification(
-      'Almost there!',
-      'You are nearing your destination — please get ready.'
-    );
-
+    await updateAlarmPhase('TRIGGERED', true);
+    await sendNotification('Almost there!', 'You are nearing your destination — please get ready.');
     await playAlarmSound();
 
     const vibratePattern = [200, 100, 200, 100, 200, 100, 200, 100];
@@ -127,66 +97,56 @@ export const triggerAlarm = async (): Promise<void> => {
     const vibrationLoop = (): void => {
       if (isAlarmActive && Date.now() - startTime < ALARM_DURATION_MS) {
         Vibration.vibrate(vibratePattern);
-        const timeoutId = setTimeout(vibrationLoop, 1000);
-        vibrationIntervalIds.push(timeoutId);
+        vibrationIntervalIds.push(setTimeout(vibrationLoop, 1000));
       }
     };
 
     clearAlarmTimeouts();
     vibrationLoop();
-
-    alarmTimeoutId = setTimeout(() => {
-      void stopAlarm();
-    }, ALARM_DURATION_MS);
+    alarmTimeoutId = setTimeout(() => void stopAlarm(), ALARM_DURATION_MS);
   } catch (error) {
     isAlarmActive = false;
-    await updateAlarmPhase('CLEANUP', false);
+    clearAlarmTimeouts();
+    Vibration.cancel();
+    try {
+      await stopTrackingForAlarmEnd();
+      await wipeAllData();
+    } catch (cleanupError) {
+      if (__DEV__) console.warn('Alarm failure cleanup error');
+    }
     if (__DEV__) console.error('Alarm error');
   }
 };
 
-/**
- * Stop alarm (called automatically after 8 seconds or manually).
- * Also owns final tracking/data cleanup for the completed session.
- */
 export const stopAlarm = async (): Promise<void> => {
   const persistedState = await getAlarmState();
 
-  if (!isAlarmActive && !(persistedState?.isActive || persistedState?.phase === 'TRIGGERED')) {
-    clearAlarmTimeouts();
-    await wipeAllData();
-    return;
-  }
-
   isAlarmActive = false;
   clearAlarmTimeouts();
+  Vibration.cancel();
 
   try {
-    Vibration.cancel();
-
     if (alarmSoundObject?.unloadAsync) {
       await alarmSoundObject.unloadAsync();
       alarmSoundObject = null;
     }
 
-    const existingState = (await getAlarmState()) ?? { isActive: false };
-    await saveAlarmState({
-      ...existingState,
-      isActive: false,
-      phase: 'CLEANUP',
-      lastUpdateTime: Date.now(),
-    });
+    if (persistedState?.isActive || persistedState?.phase === 'TRIGGERED') {
+      const existingState = (await getAlarmState()) ?? { isActive: false };
+      await saveAlarmState({
+        ...existingState,
+        isActive: false,
+        phase: 'CLEANUP',
+        lastUpdateTime: Date.now(),
+      });
+    }
 
     await stopTrackingForAlarmEnd();
     await wipeAllData();
   } catch (error) {
     if (__DEV__) console.warn('Alarm cleanup error');
+    throw error instanceof Error ? error : new Error('Alarm cleanup failed');
   }
 };
 
-/**
- * Check if alarm is currently active
- */
-export const isAlarmRunning = (): boolean => {
-  return isAlarmActive;
-};
+export const isAlarmRunning = (): boolean => isAlarmActive;
