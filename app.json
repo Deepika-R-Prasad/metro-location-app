@@ -36,8 +36,7 @@
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.VIBRATE"
-      ],
-      "usesCleartextTraffic": false
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
