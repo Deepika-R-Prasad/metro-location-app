@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -19,6 +19,7 @@ import {
   saveTargetLocation,
   saveThresholdDistance,
   saveAlarmState,
+  wipeAllData,
 } from '../utils/cacheManager';
 import {
   registerBackgroundLocationTask,
@@ -30,20 +31,124 @@ interface ConfigurationScreenProps {
   navigation: any;
 }
 
+interface DestinationResult {
+  latitude: number;
+  longitude: number;
+  label: string;
+}
+
+const MIN_SEARCH_LENGTH = 3;
+const SEARCH_DEBOUNCE_MS = 800;
+const MAX_RESULTS = 5;
+
 export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
   navigation,
 }) => {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
-  const [latitude, setLatitude] = useState<string>('');
-  const [longitude, setLongitude] = useState<string>('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<DestinationResult[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [selectedDestination, setSelectedDestination] = useState<DestinationResult | null>(null);
   const [thresholdDistance, setThresholdDistance] = useState<string>('100');
   const [isLoading, setIsLoading] = useState(false);
   const [currentLocation, setCurrentLocation] = useState<string>('');
+  const searchRequestId = useRef(0);
 
-  const getCurrentLocation = async () => {
+  const searchDestination = async (text: string): Promise<void> => {
+    const query = text.trim();
+    const requestId = ++searchRequestId.current;
+
+    if (query.length < MIN_SEARCH_LENGTH) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+
     try {
+      setIsSearching(true);
+
+      // Android requires foreground location permission for geocoding.
+      const permission = await Location.getForegroundPermissionsAsync();
+      if (permission.status !== 'granted') {
+        const requested = await Location.requestForegroundPermissionsAsync();
+        if (requested.status !== 'granted') {
+          if (requestId === searchRequestId.current) {
+            setSearchResults([]);
+            setIsSearching(false);
+          }
+          return;
+        }
+      }
+
+      const geocodedLocations = await Location.geocodeAsync(query);
+
+      if (requestId !== searchRequestId.current) {
+        return;
+      }
+
+      const seen = new Set<string>();
+      const mapped: DestinationResult[] = geocodedLocations
+        .filter((location) => Number.isFinite(location.latitude) && Number.isFinite(location.longitude))
+        .map((location) => ({
+          latitude: location.latitude,
+          longitude: location.longitude,
+          label: query,
+        }))
+        .filter((location) => {
+          const key = `${location.latitude.toFixed(5)},${location.longitude.toFixed(5)}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .slice(0, MAX_RESULTS);
+
+      setSearchResults(mapped);
+    } catch (error) {
+      if (requestId === searchRequestId.current) {
+        setSearchResults([]);
+      }
+      if (__DEV__) console.warn('Destination search failed');
+    } finally {
+      if (requestId === searchRequestId.current) {
+        setIsSearching(false);
+      }
+    }
+  };
+
+  const handleSearchChange = (text: string): void => {
+    searchRequestId.current += 1;
+    setSearchQuery(text);
+    setSelectedDestination(null);
+    setSearchResults([]);
+    setIsSearching(false);
+
+    const query = text.trim();
+    if (query.length < MIN_SEARCH_LENGTH) {
+      return;
+    }
+
+    const requestId = searchRequestId.current;
+    setIsSearching(true);
+
+    setTimeout(() => {
+      if (requestId !== searchRequestId.current) return;
+      void searchDestination(query);
+    }, SEARCH_DEBOUNCE_MS);
+  };
+
+  const selectDestination = (result: DestinationResult): void => {
+    searchRequestId.current += 1;
+    setSelectedDestination(result);
+    setSearchQuery(result.label);
+    setSearchResults([]);
+    setIsSearching(false);
+  };
+
+  const getCurrentLocation = async (): Promise<void> => {
+    try {
+      setIsLoading(true);
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
         Alert.alert(
@@ -53,16 +158,22 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
         return;
       }
 
-      setIsLoading(true);
       const location = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.Highest,
       });
 
-      const lat = location.coords.latitude.toFixed(6);
-      const lon = location.coords.longitude.toFixed(6);
-      setLatitude(lat);
-      setLongitude(lon);
-      setCurrentLocation(`${lat}, ${lon}`);
+      const destination: DestinationResult = {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        label: 'Current location',
+      };
+
+      setSelectedDestination(destination);
+      setSearchQuery(destination.label);
+      setSearchResults([]);
+      setCurrentLocation(
+        `${location.coords.latitude.toFixed(6)}, ${location.coords.longitude.toFixed(6)}`
+      );
     } catch (error) {
       Alert.alert('Error', 'Failed to get current location');
       if (__DEV__) console.error('Current location error');
@@ -72,22 +183,23 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
   };
 
   const validateInputs = (): boolean => {
-    const lat = Number(latitude);
-    const lon = Number(longitude);
     const threshold = Number(thresholdDistance);
 
-    if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(threshold)) {
-      Alert.alert('Invalid Input', 'Please enter valid numbers');
+    if (!selectedDestination) {
+      Alert.alert('Select a destination', 'Search for a place and select a result before setting the alarm.');
       return false;
     }
 
-    if (lat < -90 || lat > 90) {
-      Alert.alert('Invalid Latitude', 'Latitude must be between -90 and 90');
+    if (
+      !Number.isFinite(selectedDestination.latitude) ||
+      !Number.isFinite(selectedDestination.longitude)
+    ) {
+      Alert.alert('Invalid Destination', 'Please select a valid destination.');
       return false;
     }
 
-    if (lon < -180 || lon > 180) {
-      Alert.alert('Invalid Longitude', 'Longitude must be between -180 and 180');
+    if (!Number.isFinite(threshold)) {
+      Alert.alert('Invalid Input', 'Please enter a valid distance.');
       return false;
     }
 
@@ -99,17 +211,18 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
     return true;
   };
 
-  const handleStartTracking = async () => {
+  const handleStartTracking = async (): Promise<void> => {
     if (!validateInputs()) return;
+
+    let sessionDataPersisted = false;
 
     try {
       setIsLoading(true);
 
-      const lat = Number(latitude);
-      const lon = Number(longitude);
+      const lat = selectedDestination!.latitude;
+      const lon = selectedDestination!.longitude;
       const threshold = Number(thresholdDistance);
 
-      // Foreground permission must be granted before Android can grant background location.
       const foreground = await Location.requestForegroundPermissionsAsync();
       if (foreground.status !== 'granted') {
         Alert.alert(
@@ -130,7 +243,6 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
 
       await initializeNotifications();
 
-      // Request background location only after the user explicitly starts an alarm.
       const background = await Location.requestBackgroundPermissionsAsync();
       if (background.status !== 'granted') {
         Alert.alert(
@@ -140,6 +252,7 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
         return;
       }
 
+      // Persist only after all required permissions have been granted.
       await saveTargetLocation(lat, lon);
       await saveThresholdDistance(threshold);
       await saveAlarmState({
@@ -150,17 +263,25 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
         thresholdDistance: threshold,
         lastUpdateTime: Date.now(),
       });
+      sessionDataPersisted = true;
 
       await registerBackgroundLocationTask();
       await startBackgroundLocationUpdates();
 
-      Alert.alert('Alarm active', 'You will be notified when you are nearing your destination.', [
-        {
-          text: 'OK',
-          onPress: () => navigation.navigate('Home'),
-        },
-      ]);
+      Alert.alert(
+        'Alarm active',
+        'You will be notified when you are nearing your destination.',
+        [
+          {
+            text: 'OK',
+            onPress: () => navigation.navigate('Home'),
+          },
+        ]
+      );
     } catch (error) {
+      if (sessionDataPersisted) {
+        await wipeAllData();
+      }
       if (__DEV__) console.error('Error starting tracking');
       Alert.alert('Error', 'Failed to start location tracking. Please try again.');
     } finally {
@@ -171,45 +292,89 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: isDark ? '#1a1a1a' : '#f5f5f5' }]}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.keyboardAvoidingView}>
-        <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+        <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
           <View style={styles.headerSection}>
             <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
               <Text style={[styles.backButtonText, { color: isDark ? '#ffffff' : '#1a1a1a' }]}>← Back</Text>
             </TouchableOpacity>
             <Text style={[styles.title, { color: isDark ? '#ffffff' : '#1a1a1a' }]}>Configure Alarm</Text>
-            <Text style={[styles.subtitle, { color: isDark ? '#b0b0b0' : '#666666' }]}>Set your destination and preferred distance threshold</Text>
+            <Text style={[styles.subtitle, { color: isDark ? '#b0b0b0' : '#666666' }]}>Search for your destination and choose when to be notified.</Text>
           </View>
 
-          {currentLocation && (
-            <View style={[styles.infoCard, { backgroundColor: isDark ? '#2a2a2a' : '#e8f4f8', borderColor: isDark ? '#3a3a3a' : '#b3d9e8' }]}>
-              <Text style={[styles.infoCardLabel, { color: isDark ? '#b0b0b0' : '#666666' }]}>📍 Current Location</Text>
-              <Text style={[styles.infoCardValue, { color: isDark ? '#ffffff' : '#1a1a1a' }]}>{currentLocation}</Text>
-            </View>
-          )}
-
           <View style={styles.formSection}>
-            <Text style={[styles.sectionTitle, { color: isDark ? '#ffffff' : '#1a1a1a' }]}>Target Destination</Text>
-            <View style={styles.coordinateInputGroup}>
-              <View style={styles.coordinateInputContainer}>
-                <Text style={[styles.inputLabel, { color: isDark ? '#b0b0b0' : '#666666' }]}>Latitude</Text>
-                <TextInput style={[styles.textInput, { backgroundColor: isDark ? '#2a2a2a' : '#ffffff', color: isDark ? '#ffffff' : '#1a1a1a', borderColor: isDark ? '#3a3a3a' : '#ddd' }]} placeholder="e.g., 40.7128" placeholderTextColor={isDark ? '#666666' : '#999999'} value={latitude} onChangeText={setLatitude} keyboardType="decimal-pad" editable={!isLoading} />
+            <Text style={[styles.sectionTitle, { color: isDark ? '#ffffff' : '#1a1a1a' }]}>Destination</Text>
+            <TextInput
+              style={[styles.textInput, styles.searchInput, { backgroundColor: isDark ? '#2a2a2a' : '#ffffff', color: isDark ? '#ffffff' : '#1a1a1a', borderColor: isDark ? '#3a3a3a' : '#ddd' }]}
+              placeholder="Search a place, station or city"
+              placeholderTextColor={isDark ? '#777777' : '#999999'}
+              value={searchQuery}
+              onChangeText={handleSearchChange}
+              editable={!isLoading}
+              autoCorrect={false}
+              returnKeyType="search"
+            />
+
+            {isSearching && (
+              <View style={styles.searchStatus}>
+                <ActivityIndicator size="small" color="#FF6B6B" />
+                <Text style={[styles.searchStatusText, { color: isDark ? '#b0b0b0' : '#666666' }]}>Searching…</Text>
               </View>
-              <View style={styles.coordinateInputContainer}>
-                <Text style={[styles.inputLabel, { color: isDark ? '#b0b0b0' : '#666666' }]}>Longitude</Text>
-                <TextInput style={[styles.textInput, { backgroundColor: isDark ? '#2a2a2a' : '#ffffff', color: isDark ? '#ffffff' : '#1a1a1a', borderColor: isDark ? '#3a3a3a' : '#ddd' }]} placeholder="e.g., -74.0060" placeholderTextColor={isDark ? '#666666' : '#999999'} value={longitude} onChangeText={setLongitude} keyboardType="decimal-pad" editable={!isLoading} />
+            )}
+
+            {searchResults.length > 0 && !selectedDestination && (
+              <View style={[styles.resultsCard, { backgroundColor: isDark ? '#2a2a2a' : '#ffffff', borderColor: isDark ? '#3a3a3a' : '#ddd' }]}>
+                {searchResults.map((item, index) => (
+                  <TouchableOpacity
+                    key={`${item.latitude}-${item.longitude}-${index}`}
+                    style={[styles.resultItem, { borderBottomColor: isDark ? '#3a3a3a' : '#eeeeee' }]}
+                    onPress={() => selectDestination(item)}
+                  >
+                    <Text style={[styles.resultTitle, { color: isDark ? '#ffffff' : '#1a1a1a' }]} numberOfLines={2}>
+                      {item.label}
+                    </Text>
+                    <Text style={[styles.resultCoordinates, { color: isDark ? '#999999' : '#777777' }]}>
+                      {item.latitude.toFixed(5)}, {item.longitude.toFixed(5)}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
               </View>
-            </View>
+            )}
+
+            {selectedDestination && (
+              <View style={[styles.selectedCard, { backgroundColor: isDark ? '#2a2a2a' : '#eef8f2', borderColor: isDark ? '#3a3a3a' : '#b7ddc3' }]}>
+                <Text style={[styles.selectedLabel, { color: isDark ? '#ffffff' : '#1a1a1a' }]}>✓ Destination selected</Text>
+                <Text style={[styles.selectedName, { color: isDark ? '#b0b0b0' : '#555555' }]}>{selectedDestination.label}</Text>
+                <Text style={[styles.resultCoordinates, { color: isDark ? '#999999' : '#777777' }]}>
+                  {selectedDestination.latitude.toFixed(5)}, {selectedDestination.longitude.toFixed(5)}
+                </Text>
+              </View>
+            )}
+
             <TouchableOpacity style={[styles.useCurrentButton, { opacity: isLoading ? 0.5 : 1 }]} onPress={getCurrentLocation} disabled={isLoading}>
-              {isLoading ? <ActivityIndicator size="small" color="#FF6B6B" /> : <Text style={styles.useCurrentButtonText}>📍 Use Current Location</Text>}
+              <Text style={styles.useCurrentButtonText}>📍 Use Current Location</Text>
             </TouchableOpacity>
+
+            {currentLocation && (
+              <Text style={[styles.currentLocationText, { color: isDark ? '#888888' : '#777777' }]}>Current device location: {currentLocation}</Text>
+            )}
+
+            <Text style={[styles.helperText, { color: isDark ? '#888888' : '#777777' }]}>The app saves only the selected latitude/longitude for the active alarm. Network access is not required once the alarm is set.</Text>
           </View>
 
           <View style={styles.formSection}>
             <Text style={[styles.sectionTitle, { color: isDark ? '#ffffff' : '#1a1a1a' }]}>Trigger Threshold</Text>
-            <Text style={[styles.inputLabel, { color: isDark ? '#b0b0b0' : '#666666' }]}>Distance in Meters</Text>
-            <TextInput style={[styles.textInput, { backgroundColor: isDark ? '#2a2a2a' : '#ffffff', color: isDark ? '#ffffff' : '#1a1a1a', borderColor: isDark ? '#3a3a3a' : '#ddd' }]} placeholder="e.g., 100" placeholderTextColor={isDark ? '#666666' : '#999999'} value={thresholdDistance} onChangeText={setThresholdDistance} keyboardType="decimal-pad" editable={!isLoading} />
+            <Text style={[styles.inputLabel, { color: isDark ? '#b0b0b0' : '#666666' }]}>Notify me this many metres before the destination</Text>
+            <TextInput
+              style={[styles.textInput, { backgroundColor: isDark ? '#2a2a2a' : '#ffffff', color: isDark ? '#ffffff' : '#1a1a1a', borderColor: isDark ? '#3a3a3a' : '#ddd' }]}
+              placeholder="e.g., 100"
+              placeholderTextColor={isDark ? '#666666' : '#999999'}
+              value={thresholdDistance}
+              onChangeText={setThresholdDistance}
+              keyboardType="number-pad"
+              editable={!isLoading}
+            />
             <View style={[styles.thresholdHelper, { backgroundColor: isDark ? '#2a2a2a' : '#f0f0f0', borderColor: isDark ? '#3a3a3a' : '#ddd' }]}>
-              <Text style={[styles.thresholdHelperText, { color: isDark ? '#b0b0b0' : '#666666' }]}>💡 Recommended: 100-500m for most use cases</Text>
+              <Text style={[styles.thresholdHelperText, { color: isDark ? '#b0b0b0' : '#666666' }]}>💡 Recommended: 100–500 m for most use cases</Text>
             </View>
           </View>
 
@@ -237,10 +402,22 @@ const styles = StyleSheet.create({
   infoCardValue: { fontSize: 14, fontWeight: '500', fontFamily: 'Courier New' },
   formSection: { marginBottom: 28 },
   sectionTitle: { fontSize: 16, fontWeight: '600', marginBottom: 16 },
-  coordinateInputGroup: { flexDirection: 'row', gap: 12, marginBottom: 12 },
-  coordinateInputContainer: { flex: 1 },
   inputLabel: { fontSize: 13, fontWeight: '500', marginBottom: 6 },
   textInput: { borderWidth: 1, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 12, fontSize: 16 },
+  searchInput: { minHeight: 50 },
+  searchStatus: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10 },
+  searchStatusText: { fontSize: 13 },
+  resultsCard: { marginTop: 6, borderWidth: 1, borderRadius: 10, overflow: 'hidden' },
+  resultItem: { paddingHorizontal: 14, paddingVertical: 12, borderBottomWidth: 1 },
+  resultTitle: { fontSize: 15, fontWeight: '600', marginBottom: 4 },
+  resultCoordinates: { fontSize: 12 },
+  selectedCard: { marginTop: 10, padding: 14, borderRadius: 10, borderWidth: 1 },
+  selectedLabel: { fontSize: 14, fontWeight: '700', marginBottom: 4 },
+  selectedName: { fontSize: 14, marginBottom: 3 },
+  currentLocationText: { fontSize: 12, marginTop: 10 },
+  helperText: { fontSize: 12, lineHeight: 18, marginTop: 12 },
+  coordinateInputGroup: { flexDirection: 'row', gap: 12, marginBottom: 12 },
+  coordinateInputContainer: { flex: 1 },
   useCurrentButton: { borderWidth: 1.5, borderColor: '#FF6B6B', borderRadius: 8, paddingVertical: 12, alignItems: 'center', marginTop: 12 },
   useCurrentButtonText: { color: '#FF6B6B', fontSize: 14, fontWeight: '600' },
   thresholdHelper: { borderRadius: 8, padding: 12, marginTop: 12, borderWidth: 1 },
