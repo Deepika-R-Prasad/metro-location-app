@@ -23,6 +23,7 @@ const GPS_STALE_TIMEOUT_MS = 30000;
 
 let gpsStaleTimeoutId: ReturnType<typeof setTimeout> | null = null;
 let failsafeTimeoutId: ReturnType<typeof setTimeout> | null = null;
+let taskDefined = false;
 
 type ActivePhase = 'IDLE' | 'TRACKING' | 'GPS_LOST' | 'FAILSAFE' | 'TRIGGERED' | 'CLEANUP';
 
@@ -70,6 +71,11 @@ const scheduleGpsStaleCheck = async (): Promise<void> => {
 };
 
 export const defineBackgroundLocationTask = (): void => {
+  if (taskDefined || TaskManager.isTaskDefined(BACKGROUND_LOCATION_TASK)) {
+    taskDefined = true;
+    return;
+  }
+
   TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async (body) => {
     const { data, error } = body as {
       data?: { locations?: Location.LocationObject[] };
@@ -93,8 +99,6 @@ export const defineBackgroundLocationTask = (): void => {
       const distance = calculateDistance(lat, lon, targetLocation.lat, targetLocation.lon);
       if (distance === null) return;
 
-      // Re-read state immediately before changing anything so a concurrent alarm
-      // or cleanup cannot be overwritten by a stale callback.
       const latestState = await getAlarmState();
       if (!latestState?.isActive || latestState.phase === 'TRIGGERED' || latestState.phase === 'CLEANUP' || isAlarmRunning()) {
         return;
@@ -117,25 +121,29 @@ export const defineBackgroundLocationTask = (): void => {
       if (!shouldAlarm) return;
 
       const beforeTrigger = await getAlarmState();
-      if (beforeTrigger?.phase === 'TRIGGERED' || beforeTrigger?.phase === 'CLEANUP' || isAlarmRunning()) {
-        return;
-      }
+      if (beforeTrigger?.phase === 'TRIGGERED' || beforeTrigger?.phase === 'CLEANUP' || isAlarmRunning()) return;
 
       await triggerAlarm();
     } catch (processingError) {
       if (__DEV__) console.error('Location processing error');
     }
   });
+
+  taskDefined = true;
 };
 
-// Expo requires the task definition at module scope for background/headless invocation.
-defineBackgroundLocationTask();
-
-// Compatibility API for existing callers; the task is already defined above.
-export const registerBackgroundLocationTask = async (): Promise<void> => {};
+/**
+ * Define the task only when tracking is explicitly started.
+ * Importing this module by itself never initializes Android background tracking.
+ */
+export const registerBackgroundLocationTask = async (): Promise<void> => {
+  defineBackgroundLocationTask();
+};
 
 export const startBackgroundLocationUpdates = async (): Promise<void> => {
   try {
+    defineBackgroundLocationTask();
+
     const registered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK);
     if (registered) {
       await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
@@ -153,16 +161,14 @@ export const startBackgroundLocationUpdates = async (): Promise<void> => {
     });
 
     const started = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
-    if (!started) {
-      throw new Error('Background location updates did not start');
-    }
+    if (!started) throw new Error('Background location updates did not start');
 
     await scheduleGpsStaleCheck();
   } catch (error) {
     try {
       await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
     } catch {
-      // Best-effort rollback; preserve the original startup error.
+      // Preserve original startup error.
     }
     if (__DEV__) console.error('Failed to start location updates');
     throw error;
@@ -175,9 +181,7 @@ export const stopBackgroundLocationUpdates = async (): Promise<void> => {
 
   try {
     const registered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK);
-    if (registered) {
-      await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
-    }
+    if (registered) await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
   } catch (error) {
     if (__DEV__) console.error('Failed to stop background location updates');
   }
@@ -186,11 +190,7 @@ export const stopBackgroundLocationUpdates = async (): Promise<void> => {
 export const cancelActiveTracking = async (): Promise<void> => {
   clearGpsStaleTimer();
   clearFailsafeTimer();
-  try {
-    await stopBackgroundLocationUpdates();
-  } catch (error) {
-    if (__DEV__) console.warn('Background tracking stop failed');
-  }
+  await stopBackgroundLocationUpdates();
   await stopAlarm();
 };
 
