@@ -35,11 +35,21 @@
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.POST_NOTIFICATIONS",
-        "android.permission.VIBRATE"
-      ]
+        "android.permission.VIBRATE",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION"
+      ],
+      "package": "com.deepikarprasadsteam.wakemethere"
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "027f1aff-7ba5-4793-aa70-8c99a549139b"
+      }
+    },
+    "owner": "deepika-r-prasads-team"
   }
 }
