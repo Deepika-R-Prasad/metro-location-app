@@ -12,6 +12,8 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  Modal,
+  Pressable,
 } from 'react-native';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
@@ -41,9 +43,10 @@ const MIN_SEARCH_LENGTH = 3;
 const SEARCH_DEBOUNCE_MS = 800;
 const MAX_RESULTS = 5;
 
-export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
-  navigation,
-}) => {
+// Fixed, simple distance choices. The underlying alarm remains metres-based.
+const DISTANCE_OPTIONS = [50, 100, 200, 300, 500, 1000, 2000];
+
+export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({ navigation }) => {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
@@ -51,9 +54,10 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
   const [searchResults, setSearchResults] = useState<DestinationResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [selectedDestination, setSelectedDestination] = useState<DestinationResult | null>(null);
-  const [thresholdDistance, setThresholdDistance] = useState<string>('100');
+  const [thresholdDistance, setThresholdDistance] = useState<number>(100);
+  const [isDistancePickerVisible, setIsDistancePickerVisible] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [currentLocation, setCurrentLocation] = useState<string>('');
+  const [currentLocation, setCurrentLocation] = useState('');
   const searchRequestId = useRef(0);
 
   const searchDestination = async (text: string): Promise<void> => {
@@ -69,7 +73,6 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
     try {
       setIsSearching(true);
 
-      // Android requires foreground location permission for geocoding.
       const permission = await Location.getForegroundPermissionsAsync();
       if (permission.status !== 'granted') {
         const requested = await Location.requestForegroundPermissionsAsync();
@@ -84,13 +87,15 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
 
       const geocodedLocations = await Location.geocodeAsync(query);
 
-      if (requestId !== searchRequestId.current) {
-        return;
-      }
+      if (requestId !== searchRequestId.current) return;
 
       const seen = new Set<string>();
       const mapped: DestinationResult[] = geocodedLocations
-        .filter((location) => Number.isFinite(location.latitude) && Number.isFinite(location.longitude))
+        .filter(
+          (location) =>
+            Number.isFinite(location.latitude) &&
+            Number.isFinite(location.longitude)
+        )
         .map((location) => ({
           latitude: location.latitude,
           longitude: location.longitude,
@@ -106,14 +111,10 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
 
       setSearchResults(mapped);
     } catch (error) {
-      if (requestId === searchRequestId.current) {
-        setSearchResults([]);
-      }
+      if (requestId === searchRequestId.current) setSearchResults([]);
       if (__DEV__) console.warn('Destination search failed');
     } finally {
-      if (requestId === searchRequestId.current) {
-        setIsSearching(false);
-      }
+      if (requestId === searchRequestId.current) setIsSearching(false);
     }
   };
 
@@ -125,9 +126,7 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
     setIsSearching(false);
 
     const query = text.trim();
-    if (query.length < MIN_SEARCH_LENGTH) {
-      return;
-    }
+    if (query.length < MIN_SEARCH_LENGTH) return;
 
     const requestId = searchRequestId.current;
     setIsSearching(true);
@@ -183,10 +182,11 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
   };
 
   const validateInputs = (): boolean => {
-    const threshold = Number(thresholdDistance);
-
     if (!selectedDestination) {
-      Alert.alert('Select a destination', 'Search for a place and select a result before setting the alarm.');
+      Alert.alert(
+        'Select a destination',
+        'Search for a place and select a result before setting the alarm.'
+      );
       return false;
     }
 
@@ -198,13 +198,8 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
       return false;
     }
 
-    if (!Number.isFinite(threshold)) {
-      Alert.alert('Invalid Input', 'Please enter a valid distance.');
-      return false;
-    }
-
-    if (threshold < 10 || threshold > 100000) {
-      Alert.alert('Invalid Threshold', 'Distance must be between 10m and 100km');
+    if (!DISTANCE_OPTIONS.includes(thresholdDistance)) {
+      Alert.alert('Invalid Distance', 'Please select a valid alert distance.');
       return false;
     }
 
@@ -221,7 +216,6 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
 
       const lat = selectedDestination!.latitude;
       const lon = selectedDestination!.longitude;
-      const threshold = Number(thresholdDistance);
 
       const foreground = await Location.requestForegroundPermissionsAsync();
       if (foreground.status !== 'granted') {
@@ -252,15 +246,14 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
         return;
       }
 
-      // Persist only after all required permissions have been granted.
       await saveTargetLocation(lat, lon);
-      await saveThresholdDistance(threshold);
+      await saveThresholdDistance(thresholdDistance);
       await saveAlarmState({
         isActive: true,
         phase: 'TRACKING',
         targetLat: lat,
         targetLon: lon,
-        thresholdDistance: threshold,
+        thresholdDistance,
         lastUpdateTime: Date.now(),
       });
       sessionDataPersisted = true;
@@ -271,17 +264,10 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
       Alert.alert(
         'Alarm active',
         'You will be notified when you are nearing your destination.',
-        [
-          {
-            text: 'OK',
-            onPress: () => navigation.navigate('Home'),
-          },
-        ]
+        [{ text: 'OK', onPress: () => navigation.navigate('Home') }]
       );
     } catch (error) {
-      if (sessionDataPersisted) {
-        await wipeAllData();
-      }
+      if (sessionDataPersisted) await wipeAllData();
       if (__DEV__) console.error('Error starting tracking');
       Alert.alert('Error', 'Failed to start location tracking. Please try again.');
     } finally {
@@ -290,21 +276,71 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: isDark ? '#1a1a1a' : '#f5f5f5' }]}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.keyboardAvoidingView}>
-        <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+    <SafeAreaView
+      style={[
+        styles.container,
+        { backgroundColor: isDark ? '#1a1a1a' : '#f5f5f5' },
+      ]}
+    >
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.keyboardAvoidingView}
+      >
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+        >
           <View style={styles.headerSection}>
-            <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
-              <Text style={[styles.backButtonText, { color: isDark ? '#ffffff' : '#1a1a1a' }]}>← Back</Text>
+            <TouchableOpacity
+              style={styles.backButton}
+              onPress={() => navigation.goBack()}
+            >
+              <Text
+                style={[
+                  styles.backButtonText,
+                  { color: isDark ? '#ffffff' : '#1a1a1a' },
+                ]}
+              >
+                ← Back
+              </Text>
             </TouchableOpacity>
-            <Text style={[styles.title, { color: isDark ? '#ffffff' : '#1a1a1a' }]}>Configure Alarm</Text>
-            <Text style={[styles.subtitle, { color: isDark ? '#b0b0b0' : '#666666' }]}>Search for your destination and choose when to be notified.</Text>
+
+            <Text
+              style={[styles.title, { color: isDark ? '#ffffff' : '#1a1a1a' }]}
+            >
+              Configure Alarm
+            </Text>
+            <Text
+              style={[
+                styles.subtitle,
+                { color: isDark ? '#b0b0b0' : '#666666' },
+              ]}
+            >
+              Search for your destination and choose when to be notified.
+            </Text>
           </View>
 
           <View style={styles.formSection}>
-            <Text style={[styles.sectionTitle, { color: isDark ? '#ffffff' : '#1a1a1a' }]}>Destination</Text>
+            <Text
+              style={[
+                styles.sectionTitle,
+                { color: isDark ? '#ffffff' : '#1a1a1a' },
+              ]}
+            >
+              Destination
+            </Text>
+
             <TextInput
-              style={[styles.textInput, styles.searchInput, { backgroundColor: isDark ? '#2a2a2a' : '#ffffff', color: isDark ? '#ffffff' : '#1a1a1a', borderColor: isDark ? '#3a3a3a' : '#ddd' }]}
+              style={[
+                styles.textInput,
+                styles.searchInput,
+                {
+                  backgroundColor: isDark ? '#2a2a2a' : '#ffffff',
+                  color: isDark ? '#ffffff' : '#1a1a1a',
+                  borderColor: isDark ? '#3a3a3a' : '#ddd',
+                },
+              ]}
               placeholder="Search a place, station or city"
               placeholderTextColor={isDark ? '#777777' : '#999999'}
               value={searchQuery}
@@ -317,22 +353,53 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
             {isSearching && (
               <View style={styles.searchStatus}>
                 <ActivityIndicator size="small" color="#FF6B6B" />
-                <Text style={[styles.searchStatusText, { color: isDark ? '#b0b0b0' : '#666666' }]}>Searching…</Text>
+                <Text
+                  style={[
+                    styles.searchStatusText,
+                    { color: isDark ? '#b0b0b0' : '#666666' },
+                  ]}
+                >
+                  Searching…
+                </Text>
               </View>
             )}
 
             {searchResults.length > 0 && !selectedDestination && (
-              <View style={[styles.resultsCard, { backgroundColor: isDark ? '#2a2a2a' : '#ffffff', borderColor: isDark ? '#3a3a3a' : '#ddd' }]}>
+              <View
+                style={[
+                  styles.resultsCard,
+                  {
+                    backgroundColor: isDark ? '#2a2a2a' : '#ffffff',
+                    borderColor: isDark ? '#3a3a3a' : '#ddd',
+                  },
+                ]}
+              >
                 {searchResults.map((item, index) => (
                   <TouchableOpacity
                     key={`${item.latitude}-${item.longitude}-${index}`}
-                    style={[styles.resultItem, { borderBottomColor: isDark ? '#3a3a3a' : '#eeeeee' }]}
+                    style={[
+                      styles.resultItem,
+                      {
+                        borderBottomColor: isDark ? '#3a3a3a' : '#eeeeee',
+                      },
+                    ]}
                     onPress={() => selectDestination(item)}
                   >
-                    <Text style={[styles.resultTitle, { color: isDark ? '#ffffff' : '#1a1a1a' }]} numberOfLines={2}>
+                    <Text
+                      style={[
+                        styles.resultTitle,
+                        { color: isDark ? '#ffffff' : '#1a1a1a' },
+                      ]}
+                      numberOfLines={2}
+                    >
                       {item.label}
                     </Text>
-                    <Text style={[styles.resultCoordinates, { color: isDark ? '#999999' : '#777777' }]}>
+                    <Text
+                      style={[
+                        styles.resultCoordinates,
+                        { color: isDark ? '#999999' : '#777777' },
+                      ]}
+                    >
                       {item.latitude.toFixed(5)}, {item.longitude.toFixed(5)}
                     </Text>
                   </TouchableOpacity>
@@ -341,48 +408,224 @@ export const ConfigurationScreen: React.FC<ConfigurationScreenProps> = ({
             )}
 
             {selectedDestination && (
-              <View style={[styles.selectedCard, { backgroundColor: isDark ? '#2a2a2a' : '#eef8f2', borderColor: isDark ? '#3a3a3a' : '#b7ddc3' }]}>
-                <Text style={[styles.selectedLabel, { color: isDark ? '#ffffff' : '#1a1a1a' }]}>✓ Destination selected</Text>
-                <Text style={[styles.selectedName, { color: isDark ? '#b0b0b0' : '#555555' }]}>{selectedDestination.label}</Text>
-                <Text style={[styles.resultCoordinates, { color: isDark ? '#999999' : '#777777' }]}>
-                  {selectedDestination.latitude.toFixed(5)}, {selectedDestination.longitude.toFixed(5)}
+              <View
+                style={[
+                  styles.selectedCard,
+                  {
+                    backgroundColor: isDark ? '#2a2a2a' : '#eef8f2',
+                    borderColor: isDark ? '#3a3a3a' : '#b7ddc3',
+                  },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.selectedLabel,
+                    { color: isDark ? '#ffffff' : '#1a1a1a' },
+                  ]}
+                >
+                  ✓ Destination selected
+                </Text>
+                <Text
+                  style={[
+                    styles.selectedName,
+                    { color: isDark ? '#b0b0b0' : '#555555' },
+                  ]}
+                >
+                  {selectedDestination.label}
+                </Text>
+                <Text
+                  style={[
+                    styles.resultCoordinates,
+                    { color: isDark ? '#999999' : '#777777' },
+                  ]}
+                >
+                  {selectedDestination.latitude.toFixed(5)},{' '}
+                  {selectedDestination.longitude.toFixed(5)}
                 </Text>
               </View>
             )}
 
-            <TouchableOpacity style={[styles.useCurrentButton, { opacity: isLoading ? 0.5 : 1 }]} onPress={getCurrentLocation} disabled={isLoading}>
-              <Text style={styles.useCurrentButtonText}>📍 Use Current Location</Text>
+            <TouchableOpacity
+              style={[
+                styles.useCurrentButton,
+                { opacity: isLoading ? 0.5 : 1 },
+              ]}
+              onPress={getCurrentLocation}
+              disabled={isLoading}
+            >
+              <Text style={styles.useCurrentButtonText}>
+                📍 Use Current Location
+              </Text>
             </TouchableOpacity>
 
             {currentLocation && (
-              <Text style={[styles.currentLocationText, { color: isDark ? '#888888' : '#777777' }]}>Current device location: {currentLocation}</Text>
+              <Text
+                style={[
+                  styles.currentLocationText,
+                  { color: isDark ? '#888888' : '#777777' },
+                ]}
+              >
+                Current device location: {currentLocation}
+              </Text>
             )}
 
-            <Text style={[styles.helperText, { color: isDark ? '#888888' : '#777777' }]}>The app saves only the selected latitude/longitude for the active alarm. Network access is not required once the alarm is set.</Text>
+            <Text
+              style={[
+                styles.helperText,
+                { color: isDark ? '#888888' : '#777777' },
+              ]}
+            >
+              The app saves only the selected latitude/longitude for the active
+              alarm. Network access is not required once the alarm is set.
+            </Text>
           </View>
 
           <View style={styles.formSection}>
-            <Text style={[styles.sectionTitle, { color: isDark ? '#ffffff' : '#1a1a1a' }]}>Trigger Threshold</Text>
-            <Text style={[styles.inputLabel, { color: isDark ? '#b0b0b0' : '#666666' }]}>Notify me this many metres before the destination</Text>
-            <TextInput
-              style={[styles.textInput, { backgroundColor: isDark ? '#2a2a2a' : '#ffffff', color: isDark ? '#ffffff' : '#1a1a1a', borderColor: isDark ? '#3a3a3a' : '#ddd' }]}
-              placeholder="e.g., 100"
-              placeholderTextColor={isDark ? '#666666' : '#999999'}
-              value={thresholdDistance}
-              onChangeText={setThresholdDistance}
-              keyboardType="number-pad"
-              editable={!isLoading}
-            />
-            <View style={[styles.thresholdHelper, { backgroundColor: isDark ? '#2a2a2a' : '#f0f0f0', borderColor: isDark ? '#3a3a3a' : '#ddd' }]}>
-              <Text style={[styles.thresholdHelperText, { color: isDark ? '#b0b0b0' : '#666666' }]}>💡 Recommended: 100–500 m for most use cases</Text>
-            </View>
+            <Text
+              style={[
+                styles.sectionTitle,
+                { color: isDark ? '#ffffff' : '#1a1a1a' },
+              ]}
+            >
+              Trigger Distance
+            </Text>
+            <Text
+              style={[
+                styles.inputLabel,
+                { color: isDark ? '#b0b0b0' : '#666666' },
+              ]}
+            >
+              Notify me when I am this far from the destination
+            </Text>
+
+            <TouchableOpacity
+              activeOpacity={0.8}
+              style={[
+                styles.dropdownButton,
+                {
+                  backgroundColor: isDark ? '#2a2a2a' : '#ffffff',
+                  borderColor: isDark ? '#3a3a3a' : '#ddd',
+                },
+              ]}
+              onPress={() => setIsDistancePickerVisible(true)}
+              disabled={isLoading}
+            >
+              <Text
+                style={[
+                  styles.dropdownButtonText,
+                  { color: isDark ? '#ffffff' : '#1a1a1a' },
+                ]}
+              >
+                {thresholdDistance >= 1000
+                  ? `${thresholdDistance / 1000} km`
+                  : `${thresholdDistance} m`}
+              </Text>
+              <Text
+                style={[
+                  styles.dropdownArrow,
+                  { color: isDark ? '#b0b0b0' : '#666666' },
+                ]}
+              >
+                ▼
+              </Text>
+            </TouchableOpacity>
+
+            <Text
+              style={[
+                styles.helperText,
+                { color: isDark ? '#888888' : '#777777' },
+              ]}
+            >
+              Choose a fixed distance; the alarm will trigger when GPS reports
+              that you are within this distance.
+            </Text>
           </View>
 
-          <TouchableOpacity style={[styles.startButton, { opacity: isLoading ? 0.6 : 1 }]} onPress={handleStartTracking} disabled={isLoading}>
-            {isLoading ? <ActivityIndicator size="small" color="#ffffff" /> : <Text style={styles.startButtonText}>Set Alarm</Text>}
+          <TouchableOpacity
+            style={[
+              styles.startButton,
+              { opacity: isLoading ? 0.6 : 1 },
+            ]}
+            onPress={handleStartTracking}
+            disabled={isLoading}
+          >
+            {isLoading ? (
+              <ActivityIndicator size="small" color="#ffffff" />
+            ) : (
+              <Text style={styles.startButtonText}>Set Alarm</Text>
+            )}
           </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={isDistancePickerVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsDistancePickerVisible(false)}
+      >
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setIsDistancePickerVisible(false)}
+        >
+          <Pressable
+            style={[
+              styles.pickerCard,
+              { backgroundColor: isDark ? '#222222' : '#ffffff' },
+            ]}
+            onPress={(event) => event.stopPropagation()}
+          >
+            <Text
+              style={[
+                styles.pickerTitle,
+                { color: isDark ? '#ffffff' : '#1a1a1a' },
+              ]}
+            >
+              Trigger Distance
+            </Text>
+
+            {DISTANCE_OPTIONS.map((distance) => (
+              <TouchableOpacity
+                key={distance}
+                style={[
+                  styles.pickerOption,
+                  {
+                    backgroundColor:
+                      thresholdDistance === distance
+                        ? isDark
+                          ? '#3a2a2a'
+                          : '#fff1f1'
+                        : 'transparent',
+                  },
+                ]}
+                onPress={() => {
+                  setThresholdDistance(distance);
+                  setIsDistancePickerVisible(false);
+                }}
+              >
+                <Text
+                  style={[
+                    styles.pickerOptionText,
+                    {
+                      color:
+                        thresholdDistance === distance
+                          ? '#FF6B6B'
+                          : isDark
+                          ? '#ffffff'
+                          : '#1a1a1a',
+                    },
+                  ]}
+                >
+                  {distance >= 1000 ? `${distance / 1000} km` : `${distance} m`}
+                </Text>
+                {thresholdDistance === distance && (
+                  <Text style={styles.checkmark}>✓</Text>
+                )}
+              </TouchableOpacity>
+            ))}
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -397,31 +640,117 @@ const styles = StyleSheet.create({
   backButtonText: { fontSize: 16, fontWeight: '500' },
   title: { fontSize: 32, fontWeight: 'bold', marginBottom: 8 },
   subtitle: { fontSize: 14, lineHeight: 20 },
-  infoCard: { borderRadius: 12, padding: 16, marginBottom: 24, borderWidth: 1 },
-  infoCardLabel: { fontSize: 12, fontWeight: '600', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 },
-  infoCardValue: { fontSize: 14, fontWeight: '500', fontFamily: 'Courier New' },
   formSection: { marginBottom: 28 },
   sectionTitle: { fontSize: 16, fontWeight: '600', marginBottom: 16 },
   inputLabel: { fontSize: 13, fontWeight: '500', marginBottom: 6 },
-  textInput: { borderWidth: 1, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 12, fontSize: 16 },
+  textInput: {
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    fontSize: 16,
+  },
   searchInput: { minHeight: 50 },
-  searchStatus: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10 },
+  searchStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 10,
+  },
   searchStatusText: { fontSize: 13 },
-  resultsCard: { marginTop: 6, borderWidth: 1, borderRadius: 10, overflow: 'hidden' },
-  resultItem: { paddingHorizontal: 14, paddingVertical: 12, borderBottomWidth: 1 },
-  resultTitle: { fontSize: 15, fontWeight: '600', marginBottom: 4 },
+  resultsCard: {
+    borderWidth: 1,
+    borderRadius: 8,
+    marginTop: 4,
+    overflow: 'hidden',
+  },
+  resultItem: { padding: 14, borderBottomWidth: 1 },
+  resultTitle: { fontSize: 14, fontWeight: '600', marginBottom: 4 },
   resultCoordinates: { fontSize: 12 },
-  selectedCard: { marginTop: 10, padding: 14, borderRadius: 10, borderWidth: 1 },
+  selectedCard: {
+    borderRadius: 8,
+    padding: 14,
+    marginTop: 10,
+    borderWidth: 1,
+  },
   selectedLabel: { fontSize: 14, fontWeight: '700', marginBottom: 4 },
-  selectedName: { fontSize: 14, marginBottom: 3 },
-  currentLocationText: { fontSize: 12, marginTop: 10 },
-  helperText: { fontSize: 12, lineHeight: 18, marginTop: 12 },
-  coordinateInputGroup: { flexDirection: 'row', gap: 12, marginBottom: 12 },
-  coordinateInputContainer: { flex: 1 },
-  useCurrentButton: { borderWidth: 1.5, borderColor: '#FF6B6B', borderRadius: 8, paddingVertical: 12, alignItems: 'center', marginTop: 12 },
-  useCurrentButtonText: { color: '#FF6B6B', fontSize: 14, fontWeight: '600' },
-  thresholdHelper: { borderRadius: 8, padding: 12, marginTop: 12, borderWidth: 1 },
-  thresholdHelperText: { fontSize: 12, lineHeight: 18 },
-  startButton: { backgroundColor: '#FF6B6B', borderRadius: 12, paddingVertical: 16, alignItems: 'center', justifyContent: 'center', marginTop: 20, marginBottom: 20, shadowColor: '#FF6B6B', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 8 },
-  startButtonText: { color: '#ffffff', fontSize: 16, fontWeight: 'bold' },
+  selectedName: { fontSize: 14, marginBottom: 4 },
+  useCurrentButton: {
+    borderWidth: 1.5,
+    borderColor: '#FF6B6B',
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  useCurrentButtonText: {
+    color: '#FF6B6B',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  currentLocationText: {
+    fontSize: 12,
+    marginTop: 8,
+  },
+  helperText: {
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 10,
+  },
+  dropdownButton: {
+    minHeight: 50,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  dropdownButtonText: { fontSize: 16, fontWeight: '600' },
+  dropdownArrow: { fontSize: 14 },
+  startButton: {
+    backgroundColor: '#FF6B6B',
+    borderRadius: 12,
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 20,
+    marginBottom: 20,
+    shadowColor: '#FF6B6B',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  startButtonText: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    paddingHorizontal: 28,
+  },
+  pickerCard: {
+    borderRadius: 16,
+    paddingVertical: 10,
+    overflow: 'hidden',
+  },
+  pickerTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+  },
+  pickerOption: {
+    minHeight: 50,
+    paddingHorizontal: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  pickerOptionText: { fontSize: 16 },
+  checkmark: { color: '#FF6B6B', fontSize: 18, fontWeight: '700' },
 });
