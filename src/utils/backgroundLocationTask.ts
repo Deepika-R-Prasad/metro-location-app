@@ -1,4 +1,4 @@
-import TaskManager from 'expo-task-manager';
+import * as TaskManager from 'expo-task-manager';
 import * as Location from 'expo-location';
 import {
   calculateDistance,
