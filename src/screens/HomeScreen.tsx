@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
@@ -10,11 +10,11 @@ import {
   ActivityIndicator,
   Modal,
   Pressable,
+  Alert,
 } from 'react-native';
 import {
   getAlarmState,
   AlarmState,
-  getTargetLocation,
   getLocationSamples,
 } from '../utils/cacheManager';
 import { calculateDistance, calculateAverageVelocity, getEstimatedTimeToTarget } from '../utils/locationUtils';
@@ -56,36 +56,32 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     const state = await getAlarmState();
     setActiveState(state);
 
-    if (!state?.isActive || !state.targetLat || !state.targetLon) {
+    if (!state?.isActive || state.targetLat === undefined || state.targetLon === undefined) {
       setDistanceToDestination(null);
       setEtaSeconds(null);
       return;
     }
 
-    const lastKnown = state.lastKnownLat !== undefined && state.lastKnownLon !== undefined
-      ? { lat: state.lastKnownLat, lon: state.lastKnownLon }
-      : await (async () => {
-          const targetSamples = await getLocationSamples();
-          const latest = targetSamples.length ? targetSamples[targetSamples.length - 1] : null;
-          return latest ? { lat: latest.lat, lon: latest.lon } : null;
-        })();
+    const samples = await getLocationSamples();
+    const latest = samples.length ? samples[samples.length - 1] : null;
 
-    if (!lastKnown) {
+    if (!latest) {
       setDistanceToDestination(null);
       setEtaSeconds(null);
       return;
     }
 
-    const distance = calculateDistance(lastKnown.lat, lastKnown.lon, state.targetLat, state.targetLon);
+    const distance = calculateDistance(latest.lat, latest.lon, state.targetLat, state.targetLon);
     setDistanceToDestination(distance);
 
     if (distance !== null) {
-      const samples = await getLocationSamples();
       const velocity = calculateAverageVelocity(samples);
       const threshold = state.thresholdDistance ?? 0;
       const remaining = Math.max(0, distance - threshold);
       const eta = velocity > 0 ? getEstimatedTimeToTarget(remaining, velocity) : null;
       setEtaSeconds(Number.isFinite(eta) ? eta : null);
+    } else {
+      setEtaSeconds(null);
     }
   }, []);
 
@@ -130,10 +126,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
         {activeState?.isActive ? (
           <TouchableOpacity
             activeOpacity={0.88}
-            style={[
-              styles.activeCard,
-              { backgroundColor: isDark ? '#2a2a2a' : '#ffffff', borderColor: isDark ? '#3a3a3a' : '#e0e0e0' },
-            ]}
+            style={[styles.activeCard, { backgroundColor: isDark ? '#2a2a2a' : '#ffffff', borderColor: isDark ? '#3a3a3a' : '#e0e0e0' }]}
             onPress={() => setIsDetailsVisible(true)}
           >
             <View style={styles.activeHeaderRow}>
@@ -145,9 +138,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
             </View>
 
             <Text style={[styles.destinationLabel, { color: isDark ? '#a7a7a7' : '#707070' }]}>Destination</Text>
-            <Text style={[styles.destinationName, { color: isDark ? '#ffffff' : '#1a1a1a' }]} numberOfLines={2}>
-              {activeState.targetLabel ?? 'Saved destination'}
-            </Text>
+            <Text style={[styles.destinationName, { color: isDark ? '#ffffff' : '#1a1a1a' }]} numberOfLines={2}>{activeState.targetLabel ?? 'Saved destination'}</Text>
 
             <View style={styles.summaryRow}>
               <SummaryItem label="Distance" value={formatDistance(distanceToDestination)} isDark={isDark} />
@@ -216,40 +207,8 @@ const FeatureCard: React.FC<FeatureCardProps> = ({ icon, title, description, isD
 );
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  contentContainer: { flex: 1, padding: 20, justifyContent: 'space-between' },
-  headerSection: { marginBottom: 28, marginTop: 10 },
-  title: { fontSize: 36, fontWeight: 'bold', marginBottom: 10 },
-  subtitle: { fontSize: 16, lineHeight: 24 },
-  featureSection: { marginVertical: 20, gap: 12 },
-  activeCard: { marginVertical: 24, borderWidth: 1, borderRadius: 16, padding: 18, shadowColor: '#000000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.08, shadowRadius: 8, elevation: 3 },
-  activeHeaderRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 18 },
-  activeIndicator: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#FF6B6B', marginRight: 10 },
-  activeHeaderText: { flex: 1 },
-  activeTitle: { fontSize: 18, fontWeight: '700' },
-  activeHint: { fontSize: 12, marginTop: 3 },
-  destinationLabel: { fontSize: 12, marginBottom: 4 },
-  destinationName: { fontSize: 19, fontWeight: '700', marginBottom: 16 },
-  summaryRow: { flexDirection: 'row', gap: 8 },
-  summaryItem: { flex: 1, padding: 10, borderRadius: 10, backgroundColor: 'rgba(255,107,107,0.08)' },
-  summaryLabel: { fontSize: 11, marginBottom: 4 },
-  summaryValue: { fontSize: 14, fontWeight: '700' },
-  featureCard: { borderRadius: 12, padding: 16, borderWidth: 1 },
-  featureIcon: { fontSize: 24, marginBottom: 8 },
-  featureTitle: { fontSize: 16, fontWeight: '600', marginBottom: 6 },
-  featureDescription: { fontSize: 14, lineHeight: 20 },
-  ctaButton: { backgroundColor: '#FF6B6B', borderRadius: 12, paddingVertical: 16, alignItems: 'center', justifyContent: 'center', elevation: 8 },
-  ctaButtonText: { color: '#ffffff', fontSize: 18, fontWeight: 'bold' },
-  footerSection: { marginTop: 20 },
-  footerText: { fontSize: 12, textAlign: 'center', lineHeight: 18 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', paddingHorizontal: 24 },
-  detailsCard: { borderRadius: 18, padding: 22 },
-  detailsTitle: { fontSize: 20, fontWeight: '700', marginBottom: 12 },
-  detailsDestination: { fontSize: 17, fontWeight: '700', marginBottom: 14 },
-  detailsText: { fontSize: 14, marginBottom: 7 },
-  detailsHint: { fontSize: 12, lineHeight: 18, marginTop: 8, marginBottom: 18 },
-  cancelButton: { backgroundColor: '#D94C4C', borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
-  cancelButtonText: { color: '#ffffff', fontSize: 16, fontWeight: '700' },
-  keepButton: { paddingVertical: 14, alignItems: 'center' },
-  keepButtonText: { fontSize: 16, fontWeight: '600' },
+  container: { flex: 1 }, contentContainer: { flex: 1, padding: 20, justifyContent: 'space-between' }, headerSection: { marginBottom: 28, marginTop: 10 }, title: { fontSize: 36, fontWeight: 'bold', marginBottom: 10 }, subtitle: { fontSize: 16, lineHeight: 24 }, featureSection: { marginVertical: 20, gap: 12 },
+  activeCard: { marginVertical: 24, borderWidth: 1, borderRadius: 16, padding: 18, shadowColor: '#000000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.08, shadowRadius: 8, elevation: 3 }, activeHeaderRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 18 }, activeIndicator: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#FF6B6B', marginRight: 10 }, activeHeaderText: { flex: 1 }, activeTitle: { fontSize: 18, fontWeight: '700' }, activeHint: { fontSize: 12, marginTop: 3 }, destinationLabel: { fontSize: 12, marginBottom: 4 }, destinationName: { fontSize: 19, fontWeight: '700', marginBottom: 16 }, summaryRow: { flexDirection: 'row', gap: 8 }, summaryItem: { flex: 1, padding: 10, borderRadius: 10, backgroundColor: 'rgba(255,107,107,0.08)' }, summaryLabel: { fontSize: 11, marginBottom: 4 }, summaryValue: { fontSize: 14, fontWeight: '700' },
+  featureCard: { borderRadius: 12, padding: 16, borderWidth: 1 }, featureIcon: { fontSize: 24, marginBottom: 8 }, featureTitle: { fontSize: 16, fontWeight: '600', marginBottom: 6 }, featureDescription: { fontSize: 14, lineHeight: 20 }, ctaButton: { backgroundColor: '#FF6B6B', borderRadius: 12, paddingVertical: 16, alignItems: 'center', justifyContent: 'center', elevation: 8 }, ctaButtonText: { color: '#ffffff', fontSize: 18, fontWeight: 'bold' }, footerSection: { marginTop: 20 }, footerText: { fontSize: 12, textAlign: 'center', lineHeight: 18 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', paddingHorizontal: 24 }, detailsCard: { borderRadius: 18, padding: 22 }, detailsTitle: { fontSize: 20, fontWeight: '700', marginBottom: 12 }, detailsDestination: { fontSize: 17, fontWeight: '700', marginBottom: 14 }, detailsText: { fontSize: 14, marginBottom: 7 }, detailsHint: { fontSize: 12, lineHeight: 18, marginTop: 8, marginBottom: 18 }, cancelButton: { backgroundColor: '#D94C4C', borderRadius: 12, paddingVertical: 14, alignItems: 'center' }, cancelButtonText: { color: '#ffffff', fontSize: 16, fontWeight: '700' }, keepButton: { paddingVertical: 14, alignItems: 'center' }, keepButtonText: { fontSize: 16, fontWeight: '600' },
 });
