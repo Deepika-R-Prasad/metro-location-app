@@ -16,12 +16,7 @@ import {
   getLastKnownLocation,
   updateAlarmPhase,
 } from './cacheManager';
-import {
-  triggerAlarm,
-  isAlarmRunning,
-  stopAlarm,
-  sendNotification,
-} from './alarmManager';
+import { triggerAlarm, isAlarmRunning, stopAlarm, sendNotification } from './alarmManager';
 
 const BACKGROUND_LOCATION_TASK = 'background-location-task';
 const GPS_STALE_TIMEOUT_MS = 30000;
@@ -29,9 +24,9 @@ const GPS_STALE_TIMEOUT_MS = 30000;
 let gpsStaleTimeoutId: ReturnType<typeof setTimeout> | null = null;
 let failsafeTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
-const setBackgroundAlarmState = async (
-  nextState: 'IDLE' | 'TRACKING' | 'GPS_LOST' | 'FAILSAFE' | 'TRIGGERED' | 'CLEANUP'
-): Promise<void> => {
+type ActivePhase = 'IDLE' | 'TRACKING' | 'GPS_LOST' | 'FAILSAFE' | 'TRIGGERED' | 'CLEANUP';
+
+const setBackgroundAlarmState = async (nextState: ActivePhase): Promise<void> => {
   await updateAlarmPhase(nextState, nextState !== 'IDLE' && nextState !== 'CLEANUP');
 };
 
@@ -51,41 +46,18 @@ const clearFailsafeTimer = (): void => {
 
 const scheduleGpsStaleCheck = async (): Promise<void> => {
   clearGpsStaleTimer();
+  const state = await getAlarmState();
+  if (!state?.isActive || state.phase === 'TRIGGERED' || state.phase === 'CLEANUP') return;
 
-  const alarmState = await getAlarmState();
-  if (
-    !alarmState?.isActive ||
-    alarmState.phase === 'TRIGGERED' ||
-    alarmState.phase === 'CLEANUP'
-  ) {
-    return;
-  }
-
-  const lastUpdateTime =
-    typeof alarmState.lastUpdateTime === 'number'
-      ? alarmState.lastUpdateTime
-      : Date.now();
-  const remainingDelay = Math.max(
-    0,
-    GPS_STALE_TIMEOUT_MS - (Date.now() - lastUpdateTime)
-  );
+  const lastUpdateTime = typeof state.lastUpdateTime === 'number' ? state.lastUpdateTime : Date.now();
+  const delay = Math.max(0, GPS_STALE_TIMEOUT_MS - (Date.now() - lastUpdateTime));
 
   gpsStaleTimeoutId = setTimeout(() => {
     void (async () => {
       const latest = await getAlarmState();
-      if (
-        !latest?.isActive ||
-        latest.phase === 'TRIGGERED' ||
-        latest.phase === 'CLEANUP'
-      ) {
-        return;
-      }
+      if (!latest?.isActive || latest.phase === 'TRIGGERED' || latest.phase === 'CLEANUP') return;
 
-      const latestTime =
-        typeof latest.lastUpdateTime === 'number'
-          ? latest.lastUpdateTime
-          : Date.now();
-
+      const latestTime = typeof latest.lastUpdateTime === 'number' ? latest.lastUpdateTime : Date.now();
       if (Date.now() - latestTime >= GPS_STALE_TIMEOUT_MS) {
         await setBackgroundAlarmState('GPS_LOST');
         await handleGPSDisabledFailsafe();
@@ -94,7 +66,7 @@ const scheduleGpsStaleCheck = async (): Promise<void> => {
         await scheduleGpsStaleCheck();
       }
     })();
-  }, remainingDelay);
+  }, delay);
 };
 
 export const defineBackgroundLocationTask = (): void => {
@@ -104,49 +76,37 @@ export const defineBackgroundLocationTask = (): void => {
       error?: Error | null;
     };
 
-    if (error || !data?.locations?.length) {
-      return;
-    }
+    if (error || !data?.locations?.length) return;
 
     const location = data.locations[data.locations.length - 1];
-    if (!location?.coords) {
-      return;
-    }
+    if (!location?.coords) return;
 
     try {
       const alarmState = await getAlarmState();
       const targetLocation = await getTargetLocation();
       const thresholdDistance = await getThresholdDistance();
-
-      if (!alarmState?.isActive || !targetLocation || !thresholdDistance) {
-        return;
-      }
+      if (!alarmState?.isActive || !targetLocation || !thresholdDistance) return;
 
       const { latitude: lat, longitude: lon, accuracy } = location.coords;
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+      const distance = calculateDistance(lat, lon, targetLocation.lat, targetLocation.lon);
+      if (distance === null) return;
+
+      // Re-read state immediately before changing anything so a concurrent alarm
+      // or cleanup cannot be overwritten by a stale callback.
+      const latestState = await getAlarmState();
+      if (!latestState?.isActive || latestState.phase === 'TRIGGERED' || latestState.phase === 'CLEANUP' || isAlarmRunning()) {
         return;
       }
 
-      const distance = calculateDistance(
-        lat,
-        lon,
-        targetLocation.lat,
-        targetLocation.lon
-      );
-      if (distance === null) {
-        return;
-      }
-
-      // A valid GPS update means tracking has recovered from any previous loss.
       clearFailsafeTimer();
       await setBackgroundAlarmState('TRACKING');
       await saveLocationSample({ lat, lon, timestamp: Date.now() });
       await saveLastKnownLocation(lat, lon);
       await scheduleGpsStaleCheck();
 
-      if (alarmState.phase === 'TRIGGERED' || isAlarmRunning()) {
-        return;
-      }
+      if (isAlarmRunning()) return;
 
       const shouldAlarm = shouldTriggerFromGPS(
         distance,
@@ -154,44 +114,30 @@ export const defineBackgroundLocationTask = (): void => {
         Number.isFinite(accuracy) ? accuracy : null
       );
 
-      if (shouldAlarm) {
-        const latestState = await getAlarmState();
-        if (latestState?.phase === 'TRIGGERED' || isAlarmRunning()) {
-          return;
-        }
+      if (!shouldAlarm) return;
 
-        // triggerAlarm owns the TRIGGERED transition. Do not set the persisted
-        // state first, otherwise triggerAlarm would correctly treat it as a
-        // duplicate and refuse to start the alarm.
-        await triggerAlarm();
+      const beforeTrigger = await getAlarmState();
+      if (beforeTrigger?.phase === 'TRIGGERED' || beforeTrigger?.phase === 'CLEANUP' || isAlarmRunning()) {
+        return;
       }
+
+      await triggerAlarm();
     } catch (processingError) {
       if (__DEV__) console.error('Location processing error');
     }
   });
 };
 
-/**
- * The task must be defined at module load time so Android/Expo can invoke it
- * when the app process is recreated in the background.
- */
+// Expo requires the task definition at module scope for background/headless invocation.
 defineBackgroundLocationTask();
 
-/**
- * Kept as a compatibility no-op for existing callers. The task is already
- * defined when this module is loaded.
- */
-export const registerBackgroundLocationTask = async (): Promise<void> => {
-  // Intentionally empty: defineBackgroundLocationTask() runs at module load.
-};
+// Compatibility API for existing callers; the task is already defined above.
+export const registerBackgroundLocationTask = async (): Promise<void> => {};
 
 export const startBackgroundLocationUpdates = async (): Promise<void> => {
   try {
-    const isRegistered = await TaskManager.isTaskRegisteredAsync(
-      BACKGROUND_LOCATION_TASK
-    );
-
-    if (isRegistered) {
+    const registered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK);
+    if (registered) {
       await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
     }
 
@@ -206,8 +152,18 @@ export const startBackgroundLocationUpdates = async (): Promise<void> => {
       },
     });
 
+    const started = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+    if (!started) {
+      throw new Error('Background location updates did not start');
+    }
+
     await scheduleGpsStaleCheck();
   } catch (error) {
+    try {
+      await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+    } catch {
+      // Best-effort rollback; preserve the original startup error.
+    }
     if (__DEV__) console.error('Failed to start location updates');
     throw error;
   }
@@ -218,11 +174,8 @@ export const stopBackgroundLocationUpdates = async (): Promise<void> => {
   clearFailsafeTimer();
 
   try {
-    const isRegistered = await TaskManager.isTaskRegisteredAsync(
-      BACKGROUND_LOCATION_TASK
-    );
-
-    if (isRegistered) {
+    const registered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK);
+    if (registered) {
       await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
     }
   } catch (error) {
@@ -233,13 +186,11 @@ export const stopBackgroundLocationUpdates = async (): Promise<void> => {
 export const cancelActiveTracking = async (): Promise<void> => {
   clearGpsStaleTimer();
   clearFailsafeTimer();
-
   try {
     await stopBackgroundLocationUpdates();
   } catch (error) {
     if (__DEV__) console.warn('Background tracking stop failed');
   }
-
   await stopAlarm();
 };
 
@@ -248,55 +199,21 @@ export const handleGPSDisabledFailsafe = async (): Promise<void> => {
     clearFailsafeTimer();
 
     const currentState = await getAlarmState();
-    if (
-      !currentState?.isActive ||
-      currentState.phase === 'TRIGGERED' ||
-      currentState.phase === 'CLEANUP'
-    ) {
-      return;
-    }
+    if (!currentState?.isActive || currentState.phase === 'TRIGGERED' || currentState.phase === 'CLEANUP') return;
 
-    const locationSamples = await getLocationSamples();
-    const targetLocation = await getTargetLocation();
-    const lastKnownLocationData = await getLastKnownLocation();
+    const samples = await getLocationSamples();
+    const target = await getTargetLocation();
+    const lastKnown = await getLastKnownLocation();
+    if (!samples || samples.length < 2 || !target || !lastKnown) return;
 
-    if (
-      !locationSamples ||
-      !targetLocation ||
-      !lastKnownLocationData ||
-      locationSamples.length < 2
-    ) {
-      return;
-    }
+    const velocity = calculateAverageVelocity(samples);
+    if (velocity <= 0) return;
 
-    const avgVelocity = calculateAverageVelocity(locationSamples);
-    if (avgVelocity <= 0) {
-      return;
-    }
+    const remainingDistance = calculateDistance(lastKnown.lat, lastKnown.lon, target.lat, target.lon);
+    if (remainingDistance === null) return;
 
-    const remainingDistance = calculateDistance(
-      lastKnownLocationData.lat,
-      lastKnownLocationData.lon,
-      targetLocation.lat,
-      targetLocation.lon
-    );
-
-    if (remainingDistance === null) {
-      return;
-    }
-
-    const estimatedTimeSeconds = getEstimatedTimeToTarget(
-      remainingDistance,
-      avgVelocity
-    );
-
-    if (
-      !Number.isFinite(estimatedTimeSeconds) ||
-      estimatedTimeSeconds <= 0 ||
-      estimatedTimeSeconds > 3600
-    ) {
-      return;
-    }
+    const estimatedTimeSeconds = getEstimatedTimeToTarget(remainingDistance, velocity);
+    if (!Number.isFinite(estimatedTimeSeconds) || estimatedTimeSeconds <= 0 || estimatedTimeSeconds > 3600) return;
 
     await setBackgroundAlarmState('FAILSAFE');
     await sendNotification(
@@ -307,14 +224,7 @@ export const handleGPSDisabledFailsafe = async (): Promise<void> => {
     failsafeTimeoutId = setTimeout(() => {
       void (async () => {
         const latest = await getAlarmState();
-        if (
-          !latest?.isActive ||
-          latest.phase === 'TRIGGERED' ||
-          latest.phase === 'CLEANUP'
-        ) {
-          return;
-        }
-
+        if (!latest?.isActive || latest.phase === 'TRIGGERED' || latest.phase === 'CLEANUP') return;
         await triggerAlarm();
       })();
     }, Math.max(estimatedTimeSeconds * 1000, 5000));
