@@ -71,10 +71,7 @@ const scheduleGpsStaleCheck = async (): Promise<void> => {
 };
 
 export const defineBackgroundLocationTask = (): void => {
-  if (taskDefined || TaskManager.isTaskDefined(BACKGROUND_LOCATION_TASK)) {
-    taskDefined = true;
-    return;
-  }
+  if (taskDefined) return;
 
   TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async (body) => {
     const { data, error } = body as {
