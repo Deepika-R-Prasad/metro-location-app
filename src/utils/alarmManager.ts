@@ -3,6 +3,7 @@ import * as Notifications from 'expo-notifications';
 import { getAlarmState, saveAlarmState, updateAlarmPhase, wipeAllData } from './cacheManager';
 
 const ALARM_DURATION_MS = 8000;
+const ALARM_CHANNEL_ID = 'wake-me-there-alarm';
 
 let alarmSoundObject: { unloadAsync?: () => Promise<void> } | null = null;
 let isAlarmActive = false;
@@ -31,7 +32,7 @@ const stopTrackingForAlarmEnd = async (): Promise<void> => {
 export const initializeNotifications = async (): Promise<void> => {
   try {
     if (Platform.OS === 'android' && typeof Notifications.setNotificationChannelAsync === 'function') {
-      await Notifications.setNotificationChannelAsync('wake-me-there-alarm', {
+      await Notifications.setNotificationChannelAsync(ALARM_CHANNEL_ID, {
         name: 'WakeMeThere alarm',
         importance: Notifications.AndroidImportance.MAX,
         sound: 'default',
@@ -61,9 +62,10 @@ export const sendNotification = async (title: string, body: string): Promise<voi
         body,
         sound: 'default',
         badge: 1,
-        channelId: 'wake-me-there-alarm',
       },
-      trigger: null,
+      trigger: {
+        channelId: ALARM_CHANNEL_ID,
+      },
     });
   } catch (error) {
     if (__DEV__) console.warn('Failed to send notification');
